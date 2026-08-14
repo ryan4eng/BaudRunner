@@ -36,7 +36,7 @@ public sealed class MainWindow : Window
         Title = $"BaudRunner {AppVersion} - native serial & network terminal";
         Width = 1380; Height = 880; MinWidth = 900; MinHeight = 600;
         Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#F3F5F7" : "#11151B"));
-        try { Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://BaudRunner/Icon.png"))); } catch { }
+        try { Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://BaudRunner/AppIcon.png"))); } catch { }
         Content = BuildShell();
         Closing += async (_, _) => await ShutdownAsync();
     }
