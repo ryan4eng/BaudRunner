@@ -27,6 +27,7 @@ public sealed class MainWindow : Window
     private readonly Dictionary<TextBlock, LogWriter> _logWriters = new();
     private Menu? _mainMenu;
     private TabControl? _tabs;
+    private bool _skipConfigSave;
 
     public MainWindow()
     {
@@ -54,7 +55,9 @@ public sealed class MainWindow : Window
         _mainMenu = menu;
         var file = new MenuItem { Header = "_File" };
         file.Items.Add(MenuButton("Clear active log", (_, _) => { if (tabs.SelectedItem is TabItem t && _views.TryGetValue(t, out var view)) ClearView(view); }));
-        file.Items.Add(new Separator()); file.Items.Add(MenuButton("E_xit", (_, _) => Close()));
+        file.Items.Add(new Separator());
+        file.Items.Add(MenuButton("E_xit", (_, _) => Close()));
+        file.Items.Add(MenuButton("Exit without save", (_, _) => { _skipConfigSave = true; Close(); }));
         var help = new MenuItem { Header = "_Help" };
         help.Items.Add(MenuButton("About BaudRunner", (_, _) => _ = ShowMessage("About BaudRunner", $"BaudRunner {AppVersion}\r\nBuild: {FullVersion}\r\nA native C# Avalonia terminal for Windows and Linux.")));
         var viewMenu = new MenuItem { Header = "_View" };
@@ -155,7 +158,9 @@ public sealed class MainWindow : Window
         session.ConnectionLost += () => Dispatcher.UIThread.Post(() => { open.IsEnabled = true; close.IsEnabled = false; if (portList is not null) portList.IsEnabled = true; EndLogging(log); AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); if (tabView.OpenRequested && tabView.AutoReconnect.IsChecked == true) { if (portList is not null) portList.IsEnabled = false; StartReconnect(tabView, Connect); } });
         var commands = BuildCommands(session, log, rows, () => tabView.SelectedClientId, kind == TransportKind.TcpServer, kind == TransportKind.Serial, () => tabView.VtMode);
         RestoreRows(rows, saved.Commands);
-        log.ContextMenu = BuildLogContextMenu(tabView);
+        var logContextMenu = BuildLogContextMenu(tabView);
+        log.ContextMenu = logContextMenu;
+        vtTerminal.ContextMenu = logContextMenu;
         var rightPane = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(topControls, Dock.Top); DockPanel.SetDock(bottomControls, Dock.Top); DockPanel.SetDock(signalControls, Dock.Top);
         rightPane.Children.Add(topControls); rightPane.Children.Add(bottomControls); rightPane.Children.Add(signalControls);
@@ -174,8 +179,9 @@ public sealed class MainWindow : Window
         var logScroll = new ScrollViewer { Content = log, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
         var vtScroll = new ScrollViewer { Content = vtTerminal, IsVisible = tabView.VtMode, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
         var logFooter = new Border { Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#E8EDF1" : "#191F27")), Padding = new Thickness(8, 5), Child = modeLabel };
-        var logPane = new DockPanel(); DockPanel.SetDock(logFooter, Dock.Bottom); logPane.Children.Add(logFooter); logPane.Children.Add(logScroll);
-        grid.Children.Add(logPane); grid.Children.Add(vtScroll); Grid.SetColumn(vtScroll, 0); Grid.SetColumn(rightPane, 1); grid.Children.Add(rightPane); tab.Content = grid;
+        var viewHost = new Grid(); viewHost.Children.Add(logScroll); viewHost.Children.Add(vtScroll);
+        var logPane = new DockPanel(); DockPanel.SetDock(logFooter, Dock.Bottom); logPane.Children.Add(logFooter); logPane.Children.Add(viewHost);
+        grid.Children.Add(logPane); Grid.SetColumn(rightPane, 1); grid.Children.Add(rightPane); tab.Content = grid;
 
         async Task Connect()
         {
@@ -225,9 +231,9 @@ public sealed class MainWindow : Window
         }
         menu.Items.Add(display);
         var timestamp = new MenuItem { Header = "Timestamp received data", ToggleType = MenuItemToggleType.CheckBox, IsChecked = view.TimestampEnabled };
-        timestamp.Click += (_, _) => { timestamp.IsChecked = !timestamp.IsChecked; view.TimestampEnabled = timestamp.IsChecked; UpdateDisplayStatus(view); };
+        timestamp.Click += (_, _) => { view.TimestampEnabled = !view.TimestampEnabled; timestamp.IsChecked = view.TimestampEnabled; UpdateDisplayStatus(view); };
         var pause = new MenuItem { Header = "Pause display", ToggleType = MenuItemToggleType.CheckBox, IsChecked = view.PauseDisplay };
-        pause.Click += (_, _) => { pause.IsChecked = !pause.IsChecked; view.PauseDisplay = pause.IsChecked; UpdateDisplayStatus(view); };
+        pause.Click += (_, _) => { view.PauseDisplay = !view.PauseDisplay; pause.IsChecked = view.PauseDisplay; UpdateDisplayStatus(view); };
         menu.Items.Add(timestamp); menu.Items.Add(pause); menu.Items.Add(new Separator());
         menu.Items.Add(MenuButton("Clear log", (_, _) => ClearView(view)));
         menu.Opening += (_, _) =>
@@ -359,8 +365,11 @@ public sealed class MainWindow : Window
         // Capture and write UI state before awaiting transport shutdown. This is
         // important for the window X button, where the desktop lifetime is already
         // beginning to close while asynchronous cleanup is running.
-        foreach (var view in _views.Values) SaveView(view);
-        _config.Save();
+        if (!_skipConfigSave)
+        {
+            foreach (var view in _views.Values) SaveView(view);
+            _config.Save();
+        }
         foreach (var view in _views.Values) { StopReconnect(view); view.OpenRequested = false; await view.Session.CloseAsync(); EndLogging(view.Log); }
         foreach (var writer in _logWriters.Values) writer.Dispose(); _logWriters.Clear();
     }
