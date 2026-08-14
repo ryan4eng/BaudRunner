@@ -1,0 +1,17 @@
+<Project>
+  <PropertyGroup>
+    <!-- BaudRunner is permanently on the v2 version line. -->
+    <VersionPrefix>2.0.0</VersionPrefix>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <VersionSuffix>dev</VersionSuffix>
+    <InformationalVersion>v$(VersionPrefix)-dev</InformationalVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
+    <InformationalVersion>v$(VersionPrefix)</InformationalVersion>
+  </PropertyGroup>
+</Project>
