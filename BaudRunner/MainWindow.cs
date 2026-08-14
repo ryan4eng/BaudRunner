@@ -7,6 +7,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Documents;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform;
@@ -25,6 +26,7 @@ public sealed class MainWindow : Window
     private readonly AppConfig _config;
     private readonly Dictionary<TextBlock, LogWriter> _logWriters = new();
     private Menu? _mainMenu;
+    private TabControl? _tabs;
 
     public MainWindow()
     {
@@ -41,6 +43,7 @@ public sealed class MainWindow : Window
     private Control BuildShell()
     {
         var tabs = new TabControl { Margin = new Thickness(12) };
+        _tabs = tabs;
         AddTerminal(tabs, "Serial", TransportKind.Serial);
         AddTerminal(tabs, "TCP Client", TransportKind.TcpClient);
         AddTerminal(tabs, "TCP Server", TransportKind.TcpServer);
@@ -59,8 +62,18 @@ public sealed class MainWindow : Window
         var dark = new MenuItem { Header = "Dark mode" }; dark.Click += (_, _) => SetTheme(ThemeVariant.Dark);
         viewMenu.Items.Add(light); viewMenu.Items.Add(dark);
         menu.Items.Add(file); menu.Items.Add(viewMenu); menu.Items.Add(help);
+        KeyDown += HandleFunctionKey;
         DockPanel.SetDock(menu, Dock.Top);
         return new DockPanel { Children = { menu, tabs } };
+    }
+
+    private async void HandleFunctionKey(object? sender, KeyEventArgs e)
+    {
+        if (e.Key < Key.F1 || e.Key > Key.F12 || _tabs?.SelectedItem is not TabItem tab || !_views.TryGetValue(tab, out var view)) return;
+        var index = (int)e.Key - (int)Key.F1;
+        if (index >= view.Rows.Count || view.Rows[index].Send is not { } send) return;
+        e.Handled = true;
+        await send();
     }
 
     private void AddTerminal(TabControl tabs, string title, TransportKind kind)
@@ -275,7 +288,14 @@ public sealed class MainWindow : Window
         for (var i = 0; i < 12; i++)
         {
             var rowData = new CommandRow(); rows.Add(rowData); var text = rowData.Text = new TextBox { Watermark = $"Command {i + 1}", MinWidth = 190, HorizontalAlignment = HorizontalAlignment.Stretch }; var hex = rowData.Hex = new CheckBox { Content = "HEX", VerticalAlignment = VerticalAlignment.Center }; var lf = rowData.Lf = new CheckBox { Content = "LF", IsChecked = defaultLf, VerticalAlignment = VerticalAlignment.Center }; var send = new Button { Content = "Send", Width = 58 };
-            send.Click += async (_, _) => { try { var command = new CommandSlot { Text = text.Text ?? "", Hex = hex.IsChecked == true, AppendLineFeed = lf.IsChecked == true }; await session.SendAsync(command.ToBytes(), selectedClient()); if (isVtMode?.Invoke() != true) AppendText(log, $"\r\n> {command.Text}\r\n", "#C792EA"); } catch (Exception ex) { AppendText(log, $"\r\n[Send error: {ex.Message}]\r\n", "#E57373"); } };
+            async Task SendCommand()
+            {
+                try { var command = new CommandSlot { Text = text.Text ?? "", Hex = hex.IsChecked == true, AppendLineFeed = lf.IsChecked == true }; await session.SendAsync(command.ToBytes(), selectedClient()); if (isVtMode?.Invoke() != true) AppendText(log, $"\r\n> {command.Text}\r\n", "#C792EA"); }
+                catch (Exception ex) { AppendText(log, $"\r\n[Send error: {ex.Message}]\r\n", "#E57373"); }
+            }
+            rowData.Send = SendCommand;
+            send.Click += async (_, _) => await SendCommand();
+            text.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; await SendCommand(); } };
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,70,55,70"), ColumnSpacing = 8, Margin = new Thickness(0, 0, 6, 0) }; row.Children.Add(text); row.Children.Add(hex); row.Children.Add(lf); row.Children.Add(send); Grid.SetColumn(hex, 1); Grid.SetColumn(lf, 2); Grid.SetColumn(send, 3); panel.Children.Add(row);
         }
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -357,7 +377,7 @@ public sealed class MainWindow : Window
     {
         public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required VtTerminalControl VtTerminal; public required ComboBox Display; public required TextBlock ModeLabel; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public required Border[] Signals; public bool VtMode; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested;
     }
-    private sealed class CommandRow { public TextBox? Text; public CheckBox? Hex; public CheckBox? Lf; }
+    private sealed class CommandRow { public TextBox? Text; public CheckBox? Hex; public CheckBox? Lf; public Func<Task>? Send; }
     private sealed class SerialPortOption
     {
         public string Name { get; }
