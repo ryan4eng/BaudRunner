@@ -6,6 +6,7 @@ BaudRunner is a native C# replacement for the legacy `SerialTerminal` WinForms a
 
 - Serial terminal with port discovery, baud rate, data bits, parity, stop bits, RTS and DTR.
 - TCP client and non-blocking TCP server.
+- TCP server accepts up to five simultaneous clients, shows each remote IP and port, and lets you select or disconnect the target client for command sends.
 - UDP client and UDP server, including replying to the last client that sent a datagram.
 - Twelve reusable command rows per transport.
 - ASCII or hexadecimal command input, optional LF, normal/ASCII/hex display modes.

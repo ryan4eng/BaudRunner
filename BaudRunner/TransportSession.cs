@@ -17,6 +17,8 @@ public sealed class TransportSession : IAsyncDisposable
     private Task? _reader;
     private Task? _lineStatusReader;
     private IPEndPoint? _udpPeer;
+    private readonly Dictionary<int, (TcpClient Client, Task Reader)> _serverClients = new();
+    private int _nextClientId;
 
     public TransportKind Kind { get; }
     public bool IsOpen { get; private set; }
@@ -24,6 +26,9 @@ public sealed class TransportSession : IAsyncDisposable
     public event Action<string>? Status;
     public event Action? ConnectionLost;
     public event Action<bool, bool>? LineStatusChanged;
+    public event Action<IReadOnlyList<TcpClientInfo>>? TcpClientsChanged;
+    public event Action<TcpClientInfo>? TcpClientConnected;
+    public event Action<TcpClientInfo>? TcpClientDisconnected;
 
     public TransportSession(TransportKind kind) => Kind = kind;
 
@@ -74,14 +79,16 @@ public sealed class TransportSession : IAsyncDisposable
         }
     }
 
-    public async Task SendAsync(ReadOnlyMemory<byte> data)
+    public async Task SendAsync(ReadOnlyMemory<byte> data, int? selectedClientId = null)
     {
         if (!IsOpen) throw new InvalidOperationException("The connection is not open.");
         switch (Kind)
         {
             case TransportKind.Serial: _serial!.Write(data.ToArray(), 0, data.Length); break;
-            case TransportKind.TcpClient:
-            case TransportKind.TcpServer: await _stream!.WriteAsync(data); await _stream.FlushAsync(); break;
+            case TransportKind.TcpClient: await _stream!.WriteAsync(data); await _stream.FlushAsync(); break;
+            case TransportKind.TcpServer:
+                if (selectedClientId is null || !_serverClients.TryGetValue(selectedClientId.Value, out var selected)) throw new InvalidOperationException("Select a connected TCP client first.");
+                await selected.Client.GetStream().WriteAsync(data); await selected.Client.GetStream().FlushAsync(); break;
             case TransportKind.UdpClient: await _udp!.SendAsync(data); break;
             case TransportKind.UdpServer:
                 if (_udpPeer is null) throw new InvalidOperationException("No UDP client has sent a packet yet.");
@@ -91,6 +98,7 @@ public sealed class TransportSession : IAsyncDisposable
 
     public void SetRts(bool value) { if (_serial is not null && _serial.IsOpen) _serial.RtsEnable = value; }
     public void SetDtr(bool value) { if (_serial is not null && _serial.IsOpen) _serial.DtrEnable = value; }
+    public void DisconnectTcpClient(int id) { if (_serverClients.TryGetValue(id, out var client)) client.Client.Close(); }
 
     private async Task ReadSerialAsync(Stream stream, CancellationToken token)
     {
@@ -129,16 +137,32 @@ public sealed class TransportSession : IAsyncDisposable
     {
         try
         {
-            _tcp = await _listener!.AcceptTcpClientAsync(token);
-            _stream = _tcp.GetStream();
-            Status?.Invoke("TCP client connected");
-            await ReadStreamAsync(_stream, token);
-            Status?.Invoke("TCP client disconnected");
+            while (!token.IsCancellationRequested)
+            {
+                var client = await _listener!.AcceptTcpClientAsync(token);
+                if (_serverClients.Count >= 5) { Status?.Invoke("TCP client rejected: maximum of 5 clients reached"); client.Close(); continue; }
+                var id = ++_nextClientId;
+                var info = new TcpClientInfo(id, client.Client.RemoteEndPoint?.ToString() ?? "Unknown");
+                var reader = ReadServerClientAsync(id, client, token);
+                _serverClients[id] = (client, reader);
+                TcpClientConnected?.Invoke(info); PublishClients();
+            }
         }
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) { }
         catch (Exception ex) { Status?.Invoke($"Accept error: {ex.Message}"); }
     }
+
+    private async Task ReadServerClientAsync(int id, TcpClient client, CancellationToken token)
+    {
+        var buffer = new byte[8192];
+        try { var stream = client.GetStream(); while (!token.IsCancellationRequested) { var count = await stream.ReadAsync(buffer, token); if (count == 0) break; BytesReceived?.Invoke(buffer.AsMemory(0, count).ToArray()); } }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Status?.Invoke($"TCP client read error: {ex.Message}"); }
+        finally { client.Close(); if (_serverClients.Remove(id, out _)) { var info = new TcpClientInfo(id, "Disconnected"); TcpClientDisconnected?.Invoke(info); PublishClients(); } }
+    }
+
+    private void PublishClients() => TcpClientsChanged?.Invoke(_serverClients.Select(pair => new TcpClientInfo(pair.Key, pair.Value.Client.Client.RemoteEndPoint?.ToString() ?? "Unknown")).ToArray());
 
     private async Task ReadUdpAsync(UdpClient udp, CancellationToken token)
     {
@@ -159,9 +183,18 @@ public sealed class TransportSession : IAsyncDisposable
         _tcp?.Close(); _tcp = null;
         _listener?.Stop(); _listener = null;
         _udp?.Dispose(); _udp = null; _udpPeer = null;
+        foreach (var client in _serverClients.Values) client.Client.Close(); _serverClients.Clear(); PublishClients();
         try { if (_reader is not null) await _reader; } catch { }
         _reader = null;
         try { if (_lineStatusReader is not null) await _lineStatusReader; } catch { }
         _lineStatusReader = null;
     }
+}
+
+public sealed class TcpClientInfo
+{
+    public int Id { get; }
+    public string Endpoint { get; }
+    public TcpClientInfo(int id, string endpoint) { Id = id; Endpoint = endpoint; }
+    public override string ToString() => Endpoint;
 }
