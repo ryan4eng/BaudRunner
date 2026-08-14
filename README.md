@@ -20,6 +20,12 @@ BaudRunner is a native C# replacement for the legacy `SerialTerminal` WinForms a
 
 ## Build
 
+The application is permanently maintained on the v2 version line. The current version is `v2.0.0`.
+
+- Debug builds identify themselves as `v2.0.0-dev`.
+- Release builds and published packages identify themselves as `v2.0.0`.
+- The `-dev` suffix is controlled automatically by the build configuration.
+
 Requires the .NET 9 SDK. Restore and build from this directory:
 
 ```powershell
@@ -38,6 +44,20 @@ Framework-dependent publishing produces a small application but requires the mat
 ```powershell
 dotnet publish baudrunner/BaudRunner.csproj -c Release -r win-x64 --self-contained false
 dotnet publish baudrunner/BaudRunner.csproj -c Release -r linux-x64 --self-contained false
+```
+
+The same operation can be run from the repository root with the automated script:
+
+```powershell
+.\scripts\publish.ps1
+```
+
+For Linux or a self-contained package:
+
+```powershell
+.\scripts\publish.ps1 -RuntimeIdentifier linux-x64
+.\scripts\publish.ps1 -SelfContained
+.\scripts\publish.ps1 -NoRestore
 ```
 
 Use a runtime-specific publish rather than a generic publish; the Windows output is approximately 25 MB and excludes unused Linux/macOS backends. A self-contained package is larger because it includes .NET itself.
