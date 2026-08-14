@@ -89,6 +89,8 @@ public sealed class MainWindow : Window
         var cts = SignalIndicator("CTS", kind == TransportKind.Serial);
         var dsr = SignalIndicator("DSR", kind == TransportKind.Serial);
         ComboBox? portList = null;
+        ListBox? tcpClients = null;
+        Button? disconnectClient = null;
         if (kind == TransportKind.Serial)
         {
             portList = new ComboBox { Width = 160, PlaceholderText = "Select a port" };
@@ -117,17 +119,35 @@ public sealed class MainWindow : Window
         }
         topControls.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(10, 18, 0, 0), Children = { open, close, autoReconnect } });
 
-        var tabView = new TerminalView { Tab = tab, Session = session, Log = log, Display = display, Address = address, Port = kind == TransportKind.TcpServer || kind == TransportKind.UdpServer ? listenPort : remotePort, PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Rows = rows, Kind = kind, TimestampEnabled = saved.Timestamp, PauseDisplay = saved.Pause };
+        if (kind == TransportKind.TcpServer)
+        {
+            tcpClients = new ListBox { MinHeight = 105, MaxHeight = 140, SelectionMode = SelectionMode.Single };
+            disconnectClient = new Button { Content = "Disconnect selected", IsEnabled = false, HorizontalAlignment = HorizontalAlignment.Left };
+        }
+
+        var tabView = new TerminalView { Tab = tab, Session = session, Log = log, Display = display, Address = address, Port = kind == TransportKind.TcpServer || kind == TransportKind.UdpServer ? listenPort : remotePort, PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Rows = rows, Kind = kind, TimestampEnabled = saved.Timestamp, PauseDisplay = saved.Pause, TcpClients = tcpClients, DisconnectClient = disconnectClient };
         session.BytesReceived += bytes => Dispatcher.UIThread.Post(() => AppendBytes(log, display.SelectedIndex, bytes.Span));
         session.Status += message => Dispatcher.UIThread.Post(() => AppendStatus(log, message));
         session.LineStatusChanged += (ctsState, dsrState) => Dispatcher.UIThread.Post(() => { SetSignal(cts, ctsState); SetSignal(dsr, dsrState); });
+        session.TcpClientsChanged += clients => Dispatcher.UIThread.Post(() => UpdateTcpClients(tabView, clients));
         session.ConnectionLost += () => Dispatcher.UIThread.Post(() => { open.IsEnabled = true; close.IsEnabled = false; EndLogging(log); AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); if (tabView.OpenRequested && tabView.AutoReconnect.IsChecked == true) StartReconnect(tabView, Connect); });
         RestoreRows(rows, saved.Commands);
-        var commands = BuildCommands(session, log, rows);
+        var commands = BuildCommands(session, log, rows, () => tabView.SelectedClientId, kind == TransportKind.TcpServer);
         log.ContextMenu = BuildLogContextMenu(tabView);
         var rightPane = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(topControls, Dock.Top); DockPanel.SetDock(bottomControls, Dock.Top); DockPanel.SetDock(signalControls, Dock.Top);
-        rightPane.Children.Add(topControls); rightPane.Children.Add(bottomControls); rightPane.Children.Add(signalControls); rightPane.Children.Add(commands);
+        rightPane.Children.Add(topControls); rightPane.Children.Add(bottomControls); rightPane.Children.Add(signalControls);
+        if (kind == TransportKind.TcpServer)
+        {
+            var clientPanel = new StackPanel { Spacing = 6 };
+            clientPanel.Children.Add(new TextBlock { Text = "Connected TCP clients (select a target):" });
+            clientPanel.Children.Add(tcpClients!);
+            clientPanel.Children.Add(disconnectClient!);
+            var clientBorder = new Border { BorderBrush = new SolidColorBrush(Color.Parse("#59636F")), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(5), Padding = new Thickness(8), Margin = new Thickness(0, 0, 0, 10), Child = clientPanel };
+            DockPanel.SetDock(clientBorder, Dock.Top);
+            rightPane.Children.Add(clientBorder);
+        }
+        rightPane.Children.Add(commands);
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("2*,3*"), ColumnSpacing = 12 };
         var logScroll = new ScrollViewer { Content = log, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
         grid.Children.Add(logScroll); Grid.SetColumn(rightPane, 1); grid.Children.Add(rightPane); tab.Content = grid;
@@ -144,6 +164,8 @@ public sealed class MainWindow : Window
         close.Click += async (_, _) => { tabView.OpenRequested = false; StopReconnect(tabView); await session.CloseAsync(); EndLogging(log); AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); open.IsEnabled = true; close.IsEnabled = false; };
         clear.Click += (_, _) => ClearLog(log);
         rts.IsCheckedChanged += (_, _) => session.SetRts(rts.IsChecked == true); dtr.IsCheckedChanged += (_, _) => session.SetDtr(dtr.IsChecked == true);
+        if (tcpClients is not null) tcpClients.SelectionChanged += (_, _) => { tabView.SelectedClientId = (tcpClients.SelectedItem as TcpClientInfo)?.Id; if (disconnectClient is not null) disconnectClient.IsEnabled = tabView.SelectedClientId is not null; };
+        if (disconnectClient is not null) disconnectClient.Click += (_, _) => { if (tabView.SelectedClientId is int id) session.DisconnectTcpClient(id); };
         return tabView;
     }
 
@@ -183,13 +205,25 @@ public sealed class MainWindow : Window
         if (ports.Count > 0) list.SelectedItem = ports.FirstOrDefault(p => string.Equals(p, current, StringComparison.OrdinalIgnoreCase)) ?? ports[0];
     }
 
-    private Control BuildCommands(TransportSession session, TextBlock log, List<CommandRow> rows)
+    private static void UpdateTcpClients(TerminalView view, IReadOnlyList<TcpClientInfo> clients)
     {
-        var panel = new StackPanel { Spacing = 5 }; panel.Children.Add(new TextBlock { Text = "Quick commands", FontSize = 16, FontWeight = FontWeight.Bold, Margin = new Thickness(0, 0, 0, 4) });
+        if (view.TcpClients is null) return;
+        var selected = view.SelectedClientId;
+        view.TcpClients.Items.Clear();
+        foreach (var client in clients) view.TcpClients.Items.Add(client);
+        view.SelectedClientId = clients.Any(client => client.Id == selected) ? selected : clients.FirstOrDefault()?.Id;
+        view.TcpClients.SelectedItem = clients.FirstOrDefault(client => client.Id == view.SelectedClientId);
+        if (view.DisconnectClient is not null) view.DisconnectClient.IsEnabled = view.SelectedClientId is not null;
+    }
+
+    private Control BuildCommands(TransportSession session, TextBlock log, List<CommandRow> rows, Func<int?> selectedClient, bool serverTargeted = false)
+    {
+        var panel = new StackPanel { Spacing = 5 }; panel.Children.Add(new TextBlock { Text = "Quick commands", FontSize = 16, FontWeight = FontWeight.Bold, Margin = new Thickness(0, 0, 0, 0) });
+        if (serverTargeted) panel.Children.Add(new TextBlock { Text = "Send to selected client", FontSize = 12, Foreground = new SolidColorBrush(Color.Parse("#8BA4BB")), Margin = new Thickness(0, 0, 0, 4) });
         for (var i = 0; i < 12; i++)
         {
             var rowData = new CommandRow(); rows.Add(rowData); var text = rowData.Text = new TextBox { Watermark = $"Command {i + 1}", MinWidth = 190, HorizontalAlignment = HorizontalAlignment.Stretch }; var hex = rowData.Hex = new CheckBox { Content = "HEX", VerticalAlignment = VerticalAlignment.Center }; var lf = rowData.Lf = new CheckBox { Content = "LF", VerticalAlignment = VerticalAlignment.Center }; var send = new Button { Content = "Send", Width = 58 };
-            send.Click += async (_, _) => { try { var command = new CommandSlot { Text = text.Text ?? "", Hex = hex.IsChecked == true, AppendLineFeed = lf.IsChecked == true }; await session.SendAsync(command.ToBytes()); AppendText(log, $"\r\n> {command.Text}\r\n", "#C792EA"); } catch (Exception ex) { AppendText(log, $"\r\n[Send error: {ex.Message}]\r\n", "#E57373"); } };
+            send.Click += async (_, _) => { try { var command = new CommandSlot { Text = text.Text ?? "", Hex = hex.IsChecked == true, AppendLineFeed = lf.IsChecked == true }; await session.SendAsync(command.ToBytes(), selectedClient()); AppendText(log, $"\r\n> {command.Text}\r\n", "#C792EA"); } catch (Exception ex) { AppendText(log, $"\r\n[Send error: {ex.Message}]\r\n", "#E57373"); } };
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,70,55,70"), ColumnSpacing = 8, Margin = new Thickness(0, 0, 6, 0) }; row.Children.Add(text); row.Children.Add(hex); row.Children.Add(lf); row.Children.Add(send); Grid.SetColumn(hex, 1); Grid.SetColumn(lf, 2); Grid.SetColumn(send, 3); panel.Children.Add(row);
         }
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -263,7 +297,7 @@ public sealed class MainWindow : Window
 
     private sealed class TerminalView
     {
-        public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required ComboBox Display; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested;
+        public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required ComboBox Display; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested;
     }
     private sealed class CommandRow { public TextBox? Text; public CheckBox? Hex; public CheckBox? Lf; }
 }
