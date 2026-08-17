@@ -19,7 +19,11 @@ public sealed class VtTerminalControl : UserControl
 
     public bool HasSelection => !string.IsNullOrEmpty(_screen.SelectedText);
     public void Copy() => _screen.Copy();
-    public void SetContextMenu(ContextMenu menu) => _screen.ContextMenu = menu;
+    public void SetContextMenu(ContextMenu menu)
+    {
+        ContextMenu = menu;
+        _screen.ContextMenu = menu;
+    }
 
     public VtTerminalControl()
     {
