@@ -464,10 +464,7 @@ public sealed class MainWindow : Window
     private IEnumerable<string> GetDailyLogPaths()
     {
         var prefix = $"BaudRunner-{DateTime.Now:yyyy-MM-dd}";
-        var existing = Directory.EnumerateFiles(_logDirectory, $"{prefix}*.log")
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
-        var candidates = new List<string> { existing ?? Path.Combine(_logDirectory, $"{prefix}.log") };
+        var candidates = new List<string> { Path.Combine(_logDirectory, $"{prefix}.log") };
         candidates.AddRange(Enumerable.Range(2, 9).Select(index => Path.Combine(_logDirectory, $"{prefix}_{index}.log")));
         return candidates.Distinct(StringComparer.OrdinalIgnoreCase);
     }
