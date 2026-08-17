@@ -21,11 +21,11 @@ if (-not (Test-Path -LiteralPath $propsPath)) { throw "Version properties file w
 if ($BumpVersionOnly) {
     if (-not $isTaggedRelease) { throw "Version bumps are restricted to tagged GitHub Actions release runs." }
     [xml]$bumpProps = Get-Content $propsPath
-    $versionNode = $bumpProps.Project.PropertyGroup.VersionPrefix | Where-Object { $_ } | Select-Object -First 1
+    $versionNode = $bumpProps.SelectSingleNode('/Project/PropertyGroup/VersionPrefix')
     if (-not $versionNode) { throw "<VersionPrefix> was not found in $propsPath" }
-    $parts = $versionNode.ToString().Split('.')
+    $parts = $versionNode.InnerText.Split('.')
     if ($parts.Count -ne 3 -or $parts[0] -ne '2') { throw "VersionPrefix '$versionNode' must be a three-part v2 version." }
-    $currentVersion = $versionNode.ToString()
+    $currentVersion = $versionNode.InnerText
     $parts[2] = ([int]$parts[2] + 1).ToString()
     $nextVersion = $parts -join '.'
     $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -41,7 +41,9 @@ if ($BumpVersionOnly) {
 if (-not (Test-Path -LiteralPath $project)) { throw "Project file was not found: $project" }
 
 [xml]$props = Get-Content $propsPath
-$baseVersion = ($props.Project.PropertyGroup.VersionPrefix | Where-Object { $_ } | Select-Object -First 1).ToString()
+$versionNode = $props.SelectSingleNode('/Project/PropertyGroup/VersionPrefix')
+if (-not $versionNode) { throw "<VersionPrefix> was not found in $propsPath" }
+$baseVersion = $versionNode.InnerText
 if ($baseVersion -notmatch '^2\.\d+\.\d+$') { throw "VersionPrefix '$baseVersion' must be a three-part v2 version." }
 
 if ($isTaggedRelease) {

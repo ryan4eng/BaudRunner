@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
         run: |
           $props = [xml](Get-Content Directory.Build.props)
-          $current = ($props.Project.PropertyGroup.VersionPrefix | Where-Object { $_ } | Select-Object -First 1).ToString()
+          $current = $props.SelectSingleNode('/Project/PropertyGroup/VersionPrefix').InnerText
           if ($env:GITHUB_EVENT_NAME -eq 'push') {
             $tag = $env:GITHUB_REF_NAME
             if ($tag -notmatch '^release/v2\.\d+\.\d+$') { throw "Invalid release tag: $tag" }
