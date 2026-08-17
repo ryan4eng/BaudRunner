@@ -39,29 +39,16 @@ Run with:
 dotnet run --project baudrunner/BaudRunner.csproj
 ```
 
-Framework-dependent publishing produces a small application but requires the matching .NET desktop runtime on the target machine:
-
-```powershell
-dotnet publish baudrunner/BaudRunner.csproj -c Release -r win-x64 --self-contained false
-dotnet publish baudrunner/BaudRunner.csproj -c Release -r linux-x64 --self-contained false
-```
-
-The same operation can be run from the repository root with the automated script:
+The automated publish script builds all four platform/runtime combinations. A normal local run creates a release candidate and increments its suffix automatically:
 
 ```powershell
 .\scripts\publish.ps1
 ```
 
-For Linux or a self-contained package:
+For example, consecutive local runs produce `v2.0.0-rc1`, `v2.0.0-rc2`, and so on. Each candidate contains Windows framework-dependent, Windows self-contained, Linux framework-dependent, and Linux self-contained ZIPs under `publish/release-candidates`.
 
-```powershell
-.\scripts\publish.ps1 -RuntimeIdentifier linux-x64
-.\scripts\publish.ps1 -SelfContained
-.\scripts\publish.ps1 -NoRestore
-```
+When the same script runs in GitHub Actions for a `release/v2.x.y` tag, it automatically switches to official release mode and writes the four ZIPs under `release/v2.x.y`. Manual `Run workflow` executions use release-candidate mode and upload artifacts only.
 
-Use a runtime-specific publish rather than a generic publish; the Windows output is approximately 25 MB and excludes unused Linux/macOS backends. A self-contained package is larger because it includes .NET itself.
-
-For a machine without .NET installed, use `--self-contained true`; that is larger because it includes the .NET runtime.
+Framework-dependent packages require the matching .NET runtime. Self-contained packages include .NET and are larger.
 
 Logs are always written under the platform's local application data directory in `BaudRunner/logs`. Configuration is stored beside it as `BaudRunner/config.json`.

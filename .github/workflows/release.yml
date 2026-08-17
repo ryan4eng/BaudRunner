@@ -1,0 +1,121 @@
+name: BaudRunner release
+
+on:
+  push:
+    tags:
+      - "release/v*"
+  workflow_dispatch:
+    inputs:
+      test_build:
+        description: "Build test packages and upload artifacts only"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build-release:
+    name: Build release packages
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify release tag is on main
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          git fetch --no-tags origin main
+          if git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "Release tag points at main."
+          else
+            echo "::error::Release tags must point at main."
+            exit 1
+          fi
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $props = [xml](Get-Content Directory.Build.props)
+          $current = ($props.Project.PropertyGroup.VersionPrefix | Where-Object { $_ } | Select-Object -First 1).ToString()
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            $tag = $env:GITHUB_REF_NAME
+            if ($tag -notmatch '^release/v2\.\d+\.\d+$') { throw "Invalid release tag: $tag" }
+            $version = $tag.Substring('release/v'.Length)
+            if ($current -ne $version) { throw "Tag version $version does not match Directory.Build.props version $current" }
+          }
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Install git-cliff
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $version = '2.6.1'
+          $url = "https://github.com/orhun/git-cliff/releases/download/v$version/git-cliff-$version-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\git-cliff.zip"
+          Expand-Archive "$env:RUNNER_TEMP\git-cliff.zip" -DestinationPath "$env:RUNNER_TEMP\git-cliff" -Force
+          $directory = (Get-ChildItem "$env:RUNNER_TEMP\git-cliff" -Recurse -Filter 'git-cliff.exe' | Select-Object -First 1).DirectoryName
+          if (-not $directory) { throw 'git-cliff.exe was not found after extraction.' }
+          $directory >> $env:GITHUB_PATH
+
+      - name: Publish packages
+        id: publish
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.test_build == true)
+        shell: pwsh
+        run: .\scripts\publish.ps1
+
+      - name: Generate release notes
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: git cliff --latest --output RELEASE_NOTES.md
+
+      - name: Upload packages
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.test_build == true)
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaudRunner-${{ steps.publish.outputs.version }}
+          path: ${{ steps.publish.outputs.artifact_directory }}/*.zip
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: BaudRunner ${{ steps.publish.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: ${{ steps.publish.outputs.artifact_directory }}/*.zip
+
+  bump-version-pr:
+    name: Open patch version bump PR
+    needs: build-release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Bump patch version
+        shell: pwsh
+        run: .\scripts\publish.ps1 -BumpVersionOnly
+
+      - name: Open version bump pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore: bump patch version after ${{ github.ref_name }}"
+          title: "chore: bump patch version after ${{ github.ref_name }}"
+          body: "Bumps the BaudRunner patch version after release ${{ github.ref_name }}."
+          branch: chore/bump-version
+          delete-branch: true
