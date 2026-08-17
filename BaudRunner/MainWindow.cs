@@ -270,7 +270,7 @@ public sealed class MainWindow : Window
             pause.IsChecked = view.PauseDisplay;
             var logExists = _logWriters.TryGetValue(view.Log, out var writer) && File.Exists(writer.FilePath);
             openLog.IsEnabled = logExists;
-            revealLog.IsEnabled = logExists;
+            revealLog.IsEnabled = true;
             UpdateDisplayStatus(view);
         };
         return menu;
@@ -294,12 +294,21 @@ public sealed class MainWindow : Window
 
     private void RevealLogFile(TerminalView view)
     {
-        if (!_logWriters.TryGetValue(view.Log, out var writer) || !File.Exists(writer.FilePath)) return;
         try
         {
-            if (OperatingSystem.IsWindows()) StartExternal("explorer.exe", $"/select,{writer.FilePath}");
-            else if (OperatingSystem.IsLinux()) RevealLinuxFile(writer.FilePath);
-            else StartExternal("open", Path.GetDirectoryName(writer.FilePath)!);
+            Directory.CreateDirectory(_logDirectory);
+            var logPath = _logWriters.TryGetValue(view.Log, out var writer) && File.Exists(writer.FilePath) ? writer.FilePath : null;
+            if (OperatingSystem.IsWindows())
+            {
+                if (logPath is not null) StartExternal("explorer.exe", $"/select,{logPath}");
+                else StartExternal("explorer.exe", _logDirectory);
+            }
+            else if (OperatingSystem.IsLinux())
+            {
+                if (logPath is not null) RevealLinuxFile(logPath);
+                else StartExternal("xdg-open", _logDirectory);
+            }
+            else StartExternal("open", _logDirectory);
         }
         catch (Exception ex) { _ = ShowMessage("Open log folder", $"Could not open the log folder:\r\n{ex.Message}"); }
     }
