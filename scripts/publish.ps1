@@ -109,6 +109,7 @@ try {
 
         $application = Join-Path $output $build.Application
         if (-not (Test-Path -LiteralPath $application)) { throw "Expected application not found: $application" }
+        Get-ChildItem -LiteralPath $output -Filter "*.pdb" -File | Remove-Item -Force
         Compress-Archive -Path (Join-Path $output "*") -DestinationPath $zip -CompressionLevel Optimal
         Write-Host ("Created {0} ({1:N0} bytes)" -f $zip, (Get-Item -LiteralPath $zip).Length) -ForegroundColor Green
     }
