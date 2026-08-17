@@ -121,23 +121,14 @@ jobs:
           branch: chore/bump-version
           delete-branch: true
 
-      - name: Approve version bump pull request
-        if: steps.version-bump-pr.outputs.pull-request-url != ''
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_APPROVER_TOKEN }}
-          PR_URL: ${{ steps.version-bump-pr.outputs.pull-request-url }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
-            throw 'The RELEASE_APPROVER_TOKEN secret is required to approve the version bump PR.'
-          }
-          gh pr review $env:PR_URL --approve --body 'Automatically approved version bump after successful release.'
-
+      # Merge immediately with the workflow token; this avoids requiring a
+      # separate approval secret and works when branch protection has no
+      # pending required checks.
       - name: Squash merge version bump pull request
-        if: steps.version-bump-pr.outputs.pull-request-url != ''
+        if: steps.version-bump-pr.outputs.pull-request-number != ''
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_APPROVER_TOKEN }}
-          PR_URL: ${{ steps.version-bump-pr.outputs.pull-request-url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.version-bump-pr.outputs.pull-request-number }}
         run: |
-          gh pr merge $env:PR_URL --squash --delete-branch
+          gh pr merge $env:PR_NUMBER --squash --delete-branch
