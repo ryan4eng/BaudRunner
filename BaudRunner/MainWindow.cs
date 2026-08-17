@@ -92,7 +92,7 @@ public sealed class MainWindow : Window
         var session = new TransportSession(kind);
         var log = new TextBlock { TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Cascadia Mono,Consolas,monospace"), FontSize = 13, Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#FFFFFF" : "#0B0E12")), Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#1F2937" : "#D6E2F0")), Padding = new Thickness(8) };
         ScrollViewer.SetVerticalScrollBarVisibility(log, ScrollBarVisibility.Auto); ScrollViewer.SetHorizontalScrollBarVisibility(log, ScrollBarVisibility.Auto);
-        var display = kind == TransportKind.Serial ? Combo("Normal", "Hex (all bytes)", "Hex (except CR/LF)", "ASCII only", "VT1xx terminal") : Combo("Normal", "Hex (all bytes)", "Hex (except CR/LF)", "ASCII only"); display.SelectedIndex = Math.Clamp(saved.DisplayMode, 0, kind == TransportKind.Serial ? 4 : 3);
+        var display = kind == TransportKind.Serial ? Combo("Normal", "Hex (all bytes)", "Hex (except CR/LF)", "ASCII only", "VT100 terminal") : Combo("Normal", "Hex (all bytes)", "Hex (except CR/LF)", "ASCII only"); display.SelectedIndex = Math.Clamp(saved.DisplayMode, 0, kind == TransportKind.Serial ? 4 : 3);
         var modeLabel = new TextBlock { Text = $"Mode: {display.SelectedItem}  |  Timestamps: {(saved.Timestamp ? "On" : "Off")}  |  Paused: {(saved.Pause ? "Yes" : "No")}", FontSize = 12, FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#52606D" : "#B8C2CC")) };
         var tab = new TabItem { Header = title };
         var rows = new List<CommandRow>();
@@ -165,8 +165,9 @@ public sealed class MainWindow : Window
         var commands = BuildCommands(session, log, rows, () => tabView.SelectedClientId, kind == TransportKind.TcpServer, kind == TransportKind.Serial, () => tabView.VtMode);
         RestoreRows(rows, saved.Commands);
         var logContextMenu = BuildLogContextMenu(tabView);
+        var vtContextMenu = BuildLogContextMenu(tabView, includeCopy: true);
         log.ContextMenu = logContextMenu;
-        vtTerminal.ContextMenu = logContextMenu;
+        vtTerminal.SetContextMenu(vtContextMenu);
         var rightPane = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(topControls, Dock.Top); DockPanel.SetDock(bottomControls, Dock.Top); DockPanel.SetDock(signalControls, Dock.Top);
         rightPane.Children.Add(topControls); rightPane.Children.Add(bottomControls); rightPane.Children.Add(signalControls);
@@ -223,12 +224,22 @@ public sealed class MainWindow : Window
         foreach (var view in _views.Values) { view.Log.Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#FFFFFF" : "#0B0E12")); view.Log.Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#1F2937" : "#D6E2F0")); view.VtTerminal.SetTheme(IsLightTheme); foreach (var signal in view.Signals) SetSignal(signal, signal.Tag is true); }
     }
 
-    private ContextMenu BuildLogContextMenu(TerminalView view)
+    private ContextMenu BuildLogContextMenu(TerminalView view, bool includeCopy = false)
     {
         var menu = new ContextMenu();
+        MenuItem? copy = null;
+        Separator? copySeparator = null;
+        if (includeCopy)
+        {
+            copy = new MenuItem { Header = "Copy" };
+            copy.Click += (_, _) => view.VtTerminal.Copy();
+            menu.Items.Add(copy);
+            copySeparator = new Separator();
+            menu.Items.Add(copySeparator);
+        }
         var display = new MenuItem { Header = "Display format" };
         var displayOptions = new List<(string Name, int Index)> { ("Normal", 0), ("Hex (all bytes)", 1), ("Hex (except CR/LF)", 2), ("ASCII only", 3) };
-        if (view.Kind == TransportKind.Serial) displayOptions.Add(("VT1xx terminal", 4));
+        if (view.Kind == TransportKind.Serial) displayOptions.Add(("VT100 terminal", 4));
         foreach (var (option, index) in displayOptions)
         {
             var item = new MenuItem { Header = option, ToggleType = MenuItemToggleType.CheckBox };
@@ -244,6 +255,8 @@ public sealed class MainWindow : Window
         menu.Items.Add(MenuButton("Clear log", (_, _) => ClearView(view)));
         menu.Opening += (_, _) =>
         {
+            if (copy is not null) copy.IsVisible = view.VtTerminal.HasSelection;
+            if (copySeparator is not null) copySeparator.IsVisible = view.VtTerminal.HasSelection;
             foreach (var item in display.Items.OfType<MenuItem>()) item.IsChecked = displayOptions.First(option => option.Name == item.Header?.ToString()).Index == view.Display.SelectedIndex;
             timestamp.IsChecked = view.TimestampEnabled;
             pause.IsChecked = view.PauseDisplay;

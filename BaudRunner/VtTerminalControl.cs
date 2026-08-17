@@ -6,7 +6,7 @@ using Avalonia.Media;
 
 namespace BaudRunner;
 
-/// <summary>A compact VT100/VT1xx terminal surface for interactive serial sessions.</summary>
+/// <summary>A compact VT100-compatible terminal surface for interactive serial sessions.</summary>
 public sealed class VtTerminalControl : UserControl
 {
     private readonly SelectableTextBlock _screen = new() { TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Cascadia Mono,Consolas,monospace"), FontSize = 13, Padding = new Avalonia.Thickness(8) };
@@ -16,6 +16,10 @@ public sealed class VtTerminalControl : UserControl
     private IBrush _foreground = new SolidColorBrush(Color.Parse("#D6E2F0"));
 
     public event Action<ReadOnlyMemory<byte>>? SendBytes;
+
+    public bool HasSelection => !string.IsNullOrEmpty(_screen.SelectedText);
+    public void Copy() => _screen.Copy();
+    public void SetContextMenu(ContextMenu menu) => _screen.ContextMenu = menu;
 
     public VtTerminalControl()
     {
