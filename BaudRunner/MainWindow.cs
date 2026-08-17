@@ -1,5 +1,6 @@
 using System.IO.Ports;
 using System.Management;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Reflection;
@@ -25,6 +26,7 @@ public sealed class MainWindow : Window
     private readonly string _logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BaudRunner", "logs");
     private readonly AppConfig _config;
     private readonly Dictionary<TextBlock, LogWriter> _logWriters = new();
+    private readonly Dictionary<string, SharedLogWriter> _sharedLogWriters = new(StringComparer.OrdinalIgnoreCase);
     private Menu? _mainMenu;
     private TabControl? _tabs;
     private bool _skipConfigSave;
@@ -198,7 +200,7 @@ public sealed class MainWindow : Window
             var portText = tabView.Port.Text ?? "";
             if (kind != TransportKind.Serial && (!int.TryParse(portText, out var port) || port is < 1 or > 65535)) throw new InvalidOperationException("Enter a valid port from 1 to 65535.");
             var serialBaud = int.Parse(baud.SelectedItem?.ToString() ?? "115200"); var bits = int.Parse(dataBits.SelectedItem?.ToString() ?? "8"); var parityValue = (Parity)parity.SelectedIndex; var stop = stopBits.SelectedIndex switch { 1 => StopBits.OnePointFive, 2 => StopBits.Two, _ => StopBits.One };
-            await session.OpenAsync(selectedAddress, kind == TransportKind.Serial ? 0 : int.Parse(portText), serialBaud, bits, parityValue, stop); open.IsEnabled = false; close.IsEnabled = true; if (portList is not null) portList.IsEnabled = false; BeginLogging(log); if (kind == TransportKind.Serial) { session.SetRts(rts.IsChecked == true); session.SetDtr(dtr.IsChecked == true); }
+            await session.OpenAsync(selectedAddress, kind == TransportKind.Serial ? 0 : int.Parse(portText), serialBaud, bits, parityValue, stop); open.IsEnabled = false; close.IsEnabled = true; if (portList is not null) portList.IsEnabled = false; if (!BeginLogging(log, out var loggingError)) AppendText(log, $"\r\n[Log error: {loggingError}]\r\n", "#E57373"); if (kind == TransportKind.Serial) { session.SetRts(rts.IsChecked == true); session.SetDtr(dtr.IsChecked == true); }
         }
         open.Click += async (_, _) => { tabView.OpenRequested = true; try { await Connect(); } catch (Exception ex) { AppendText(log, $"\r\n[Open error: {ex.Message}]\r\n", "#E57373"); if (autoReconnect.IsChecked == true) StartReconnect(tabView, Connect); } };
         close.Click += async (_, _) => { tabView.OpenRequested = false; StopReconnect(tabView); await session.CloseAsync(); EndLogging(log); if (portList is not null) portList.IsEnabled = true; AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); open.IsEnabled = true; close.IsEnabled = false; };
@@ -253,7 +255,11 @@ public sealed class MainWindow : Window
         timestamp.Click += (_, _) => { view.TimestampEnabled = !view.TimestampEnabled; timestamp.IsChecked = view.TimestampEnabled; UpdateDisplayStatus(view); };
         var pause = new MenuItem { Header = "Pause display", ToggleType = MenuItemToggleType.CheckBox, IsChecked = view.PauseDisplay };
         pause.Click += (_, _) => { view.PauseDisplay = !view.PauseDisplay; pause.IsChecked = view.PauseDisplay; UpdateDisplayStatus(view); };
-        menu.Items.Add(timestamp); menu.Items.Add(pause); menu.Items.Add(new Separator());
+        var openLog = new MenuItem { Header = "Open log file" };
+        openLog.Click += (_, _) => OpenLogFile(view);
+        var revealLog = new MenuItem { Header = "Open log folder" };
+        revealLog.Click += (_, _) => RevealLogFile(view);
+        menu.Items.Add(timestamp); menu.Items.Add(pause); menu.Items.Add(new Separator()); menu.Items.Add(openLog); menu.Items.Add(revealLog); menu.Items.Add(new Separator());
         menu.Items.Add(MenuButton("Clear log", (_, _) => ClearView(view)));
         menu.Opening += (_, _) =>
         {
@@ -262,9 +268,77 @@ public sealed class MainWindow : Window
             foreach (var item in display.Items.OfType<MenuItem>()) item.IsChecked = displayOptions.First(option => option.Name == item.Header?.ToString()).Index == view.Display.SelectedIndex;
             timestamp.IsChecked = view.TimestampEnabled;
             pause.IsChecked = view.PauseDisplay;
+            var logExists = _logWriters.TryGetValue(view.Log, out var writer) && File.Exists(writer.FilePath);
+            openLog.IsEnabled = logExists;
+            revealLog.IsEnabled = logExists;
             UpdateDisplayStatus(view);
         };
         return menu;
+    }
+
+    private void OpenLogFile(TerminalView view)
+    {
+        if (!_logWriters.TryGetValue(view.Log, out var writer) || !File.Exists(writer.FilePath)) return;
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var notepadPlusPlus = FindNotepadPlusPlus() ?? "notepad.exe";
+                StartExternal(notepadPlusPlus, writer.FilePath);
+            }
+            else if (OperatingSystem.IsMacOS()) StartExternal("open", writer.FilePath);
+            else StartExternal("xdg-open", writer.FilePath);
+        }
+        catch (Exception ex) { _ = ShowMessage("Open log", $"Could not open the log file:\r\n{ex.Message}"); }
+    }
+
+    private void RevealLogFile(TerminalView view)
+    {
+        if (!_logWriters.TryGetValue(view.Log, out var writer) || !File.Exists(writer.FilePath)) return;
+        try
+        {
+            if (OperatingSystem.IsWindows()) StartExternal("explorer.exe", $"/select,{writer.FilePath}");
+            else if (OperatingSystem.IsLinux()) RevealLinuxFile(writer.FilePath);
+            else StartExternal("open", Path.GetDirectoryName(writer.FilePath)!);
+        }
+        catch (Exception ex) { _ = ShowMessage("Open log folder", $"Could not open the log folder:\r\n{ex.Message}"); }
+    }
+
+    private static void RevealLinuxFile(string path)
+    {
+        var fileManager = new[] { "nautilus", "dolphin", "nemo", "thunar" }.Select(ResolveCommand).FirstOrDefault(command => command is not null);
+        if (fileManager?.EndsWith("nautilus", StringComparison.OrdinalIgnoreCase) == true) StartExternal(fileManager, "--select", path);
+        else if (fileManager?.EndsWith("dolphin", StringComparison.OrdinalIgnoreCase) == true) StartExternal(fileManager, "--select", path);
+        else if (fileManager is not null) StartExternal(fileManager, path);
+        else StartExternal("xdg-open", Path.GetDirectoryName(path)!);
+    }
+
+    private static string? FindNotepadPlusPlus()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Notepad++", "notepad++.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Notepad++", "notepad++.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Notepad++", "notepad++.exe"),
+            ResolveCommand("notepad++.exe")
+        };
+        return candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate));
+    }
+
+    private static string? ResolveCommand(string command)
+    {
+        if (Path.IsPathRooted(command)) return File.Exists(command) ? command : null;
+        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        return path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Select(directory => Path.Combine(directory, command))
+            .FirstOrDefault(File.Exists);
+    }
+
+    private static void StartExternal(string fileName, params string[] arguments)
+    {
+        var startInfo = new ProcessStartInfo { FileName = fileName, UseShellExecute = false, CreateNoWindow = true };
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
+        Process.Start(startInfo);
     }
 
     private static void RefreshSerialPorts(ComboBox list, string? preferred)
@@ -346,8 +420,70 @@ public sealed class MainWindow : Window
         }
     }
 
-    private void BeginLogging(TextBlock log) { if (_logWriters.ContainsKey(log)) return; Directory.CreateDirectory(_logDirectory); _logWriters[log] = new LogWriter(Path.Combine(_logDirectory, $"BaudRunner-{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.log")); }
-    private void EndLogging(TextBlock log) { if (_logWriters.Remove(log, out var writer)) writer.Dispose(); }
+    private bool BeginLogging(TextBlock log, out string? error)
+    {
+        error = null;
+        if (_logWriters.ContainsKey(log)) return true;
+        try { Directory.CreateDirectory(_logDirectory); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            error = $"could not save the log: {ex.Message}";
+            return false;
+        }
+
+        try
+        {
+            foreach (var path in GetDailyLogPaths())
+            {
+                if (_sharedLogWriters.TryGetValue(path, out var existingShared))
+                {
+                    existingShared.References++;
+                    _logWriters[log] = existingShared.Writer;
+                    return true;
+                }
+
+                try
+                {
+                    var shared = new SharedLogWriter(path, new LogWriter(path));
+                    shared.References = 1;
+                    _sharedLogWriters[path] = shared;
+                    _logWriters[log] = shared.Writer;
+                    return true;
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
+        error = "could not save the log; all ten daily log files are unavailable.";
+        return false;
+    }
+
+    private IEnumerable<string> GetDailyLogPaths()
+    {
+        var prefix = $"BaudRunner-{DateTime.Now:yyyy-MM-dd}";
+        var existing = Directory.EnumerateFiles(_logDirectory, $"{prefix}*.log")
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
+        var candidates = new List<string> { existing ?? Path.Combine(_logDirectory, $"{prefix}.log") };
+        candidates.AddRange(Enumerable.Range(2, 9).Select(index => Path.Combine(_logDirectory, $"{prefix}_{index}.log")));
+        return candidates.Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void EndLogging(TextBlock log)
+    {
+        if (!_logWriters.Remove(log, out var writer)) return;
+        var shared = _sharedLogWriters.Values.FirstOrDefault(candidate => ReferenceEquals(candidate.Writer, writer));
+        if (shared is null) { writer.Dispose(); return; }
+        shared.References--;
+        if (shared.References <= 0)
+        {
+            shared.Writer.Dispose();
+            _sharedLogWriters.Remove(shared.FilePath);
+        }
+    }
     private void AppendText(TextBlock log, string text, string? color = null)
     {
         log.Inlines ??= new InlineCollection();
@@ -466,7 +602,7 @@ public sealed class MainWindow : Window
             _config.Save();
         }
         foreach (var view in _views.Values) { StopReconnect(view); view.OpenRequested = false; await view.Session.CloseAsync(); EndLogging(view.Log); }
-        foreach (var writer in _logWriters.Values) writer.Dispose(); _logWriters.Clear();
+        _logWriters.Clear(); _sharedLogWriters.Clear();
     }
 
     private void SaveView(TerminalView view)
@@ -498,7 +634,13 @@ public sealed class MainWindow : Window
         private readonly StringBuilder _pending = new();
         private DateTime _lastFlush = DateTime.UtcNow;
 
-        public LogWriter(string path) => _writer = new StreamWriter(path, append: true, Encoding.UTF8) { AutoFlush = false };
+        public string FilePath { get; }
+
+        public LogWriter(string path)
+        {
+            FilePath = path;
+            _writer = new StreamWriter(path, append: true, Encoding.UTF8) { AutoFlush = false };
+        }
 
         public void Write(string text)
         {
@@ -513,6 +655,15 @@ public sealed class MainWindow : Window
         }
 
         public void Dispose() { Flush(); _writer.Dispose(); }
+    }
+
+    private sealed class SharedLogWriter
+    {
+        public string FilePath { get; }
+        public LogWriter Writer { get; }
+        public int References { get; set; }
+
+        public SharedLogWriter(string filePath, LogWriter writer) { FilePath = filePath; Writer = writer; }
     }
 }
 
