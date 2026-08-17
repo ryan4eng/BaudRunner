@@ -76,7 +76,7 @@ public sealed class MainWindow : Window
     {
         if (e.Key < Key.F1 || e.Key > Key.F12 || _tabs?.SelectedItem is not TabItem tab || !_views.TryGetValue(tab, out var view)) return;
         var index = (int)e.Key - (int)Key.F1;
-        if (index >= view.Rows.Count || view.Rows[index].Send is not { } send) return;
+        if (!view.Session.IsOpen || index >= view.Rows.Count || view.Rows[index].Send is not { } send) return;
         e.Handled = true;
         await send();
     }
@@ -165,9 +165,10 @@ public sealed class MainWindow : Window
         session.Status += message => Dispatcher.UIThread.Post(() => AppendStatus(log, message));
         session.LineStatusChanged += (ctsState, dsrState) => Dispatcher.UIThread.Post(() => { SetSignal(cts, ctsState); SetSignal(dsr, dsrState); });
         session.TcpClientsChanged += clients => Dispatcher.UIThread.Post(() => UpdateTcpClients(tabView, clients));
-        session.ConnectionLost += () => Dispatcher.UIThread.Post(() => { open.IsEnabled = true; close.IsEnabled = false; if (portList is not null) portList.IsEnabled = true; EndLogging(log); AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); if (tabView.OpenRequested && tabView.AutoReconnect.IsChecked == true) { if (portList is not null) portList.IsEnabled = false; StartReconnect(tabView, Connect); } });
+        session.ConnectionLost += () => Dispatcher.UIThread.Post(() => { open.IsEnabled = true; close.IsEnabled = false; if (portList is not null) portList.IsEnabled = true; UpdateCommandState(tabView); AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); EndLogging(log); if (tabView.OpenRequested && tabView.AutoReconnect.IsChecked == true) { if (portList is not null) portList.IsEnabled = false; StartReconnect(tabView, Connect); } });
         var commands = BuildCommands(session, log, rows, () => tabView.SelectedClientId, kind == TransportKind.TcpServer, kind == TransportKind.Serial, () => tabView.VtMode);
         RestoreRows(rows, saved.Commands);
+        UpdateCommandState(tabView);
         var logContextMenu = BuildLogContextMenu(tabView);
         var vtContextMenu = BuildLogContextMenu(tabView, includeCopy: true);
         log.ContextMenu = logContextMenu;
@@ -200,10 +201,11 @@ public sealed class MainWindow : Window
             var portText = tabView.Port.Text ?? "";
             if (kind != TransportKind.Serial && (!int.TryParse(portText, out var port) || port is < 1 or > 65535)) throw new InvalidOperationException("Enter a valid port from 1 to 65535.");
             var serialBaud = int.Parse(baud.SelectedItem?.ToString() ?? "115200"); var bits = int.Parse(dataBits.SelectedItem?.ToString() ?? "8"); var parityValue = (Parity)parity.SelectedIndex; var stop = stopBits.SelectedIndex switch { 1 => StopBits.OnePointFive, 2 => StopBits.Two, _ => StopBits.One };
-            await session.OpenAsync(selectedAddress, kind == TransportKind.Serial ? 0 : int.Parse(portText), serialBaud, bits, parityValue, stop); open.IsEnabled = false; close.IsEnabled = true; if (portList is not null) portList.IsEnabled = false; if (!BeginLogging(log, out var loggingError)) AppendText(log, $"\r\n[Log error: {loggingError}]\r\n", "#E57373"); if (kind == TransportKind.Serial) { session.SetRts(rts.IsChecked == true); session.SetDtr(dtr.IsChecked == true); }
+            if (!BeginLogging(log, out var loggingError)) AppendText(log, $"\r\n[Log error: {loggingError}]\r\n", "#E57373");
+            await session.OpenAsync(selectedAddress, kind == TransportKind.Serial ? 0 : int.Parse(portText), serialBaud, bits, parityValue, stop); open.IsEnabled = false; close.IsEnabled = true; if (portList is not null) portList.IsEnabled = false; UpdateCommandState(tabView); if (kind == TransportKind.Serial) { session.SetRts(rts.IsChecked == true); session.SetDtr(dtr.IsChecked == true); }
         }
-        open.Click += async (_, _) => { tabView.OpenRequested = true; try { await Connect(); } catch (Exception ex) { AppendText(log, $"\r\n[Open error: {ex.Message}]\r\n", "#E57373"); if (autoReconnect.IsChecked == true) StartReconnect(tabView, Connect); } };
-        close.Click += async (_, _) => { tabView.OpenRequested = false; StopReconnect(tabView); await session.CloseAsync(); EndLogging(log); if (portList is not null) portList.IsEnabled = true; AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); open.IsEnabled = true; close.IsEnabled = false; };
+        open.Click += async (_, _) => { tabView.OpenRequested = true; try { await Connect(); } catch (Exception ex) { UpdateCommandState(tabView); AppendText(log, $"\r\n[Open error: {ex.Message}]\r\n", "#E57373"); EndLogging(log); if (autoReconnect.IsChecked == true) StartReconnect(tabView, Connect); } };
+        close.Click += async (_, _) => { tabView.OpenRequested = false; StopReconnect(tabView); await session.CloseAsync(); UpdateCommandState(tabView); if (portList is not null) portList.IsEnabled = true; AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); EndLogging(log); open.IsEnabled = true; close.IsEnabled = false; };
         clear.Click += (_, _) => ClearLog(log);
         display.SelectionChanged += (_, _) => { tabView.VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4; tabView.AutoScrollEnabled = true; tabView.HasPendingOutput = false; UpdateDisplayStatus(tabView); UpdateFollowStatus(tabView); logScroll.IsVisible = !tabView.VtMode; vtScroll.IsVisible = tabView.VtMode; if (tabView.VtMode) { vtTerminal.Focus(); FollowLiveOutput(tabView); } };
         rts.IsCheckedChanged += (_, _) => session.SetRts(rts.IsChecked == true); dtr.IsCheckedChanged += (_, _) => session.SetDtr(dtr.IsChecked == true);
@@ -400,15 +402,23 @@ public sealed class MainWindow : Window
             var rowData = new CommandRow(); rows.Add(rowData); var text = rowData.Text = new TextBox { Watermark = $"Command {i + 1}", MinWidth = 190, HorizontalAlignment = HorizontalAlignment.Stretch }; var hex = rowData.Hex = new CheckBox { Content = "HEX", VerticalAlignment = VerticalAlignment.Center }; var lf = rowData.Lf = new CheckBox { Content = "LF", IsChecked = defaultLf, VerticalAlignment = VerticalAlignment.Center }; var send = new Button { Content = "Send", Width = 58 };
             async Task SendCommand()
             {
+                if (!session.IsOpen) return;
                 try { var command = new CommandSlot { Text = text.Text ?? "", Hex = hex.IsChecked == true, AppendLineFeed = lf.IsChecked == true }; await session.SendAsync(command.ToBytes(), selectedClient()); if (isVtMode?.Invoke() != true) AppendText(log, $"\r\n> {command.Text}\r\n", "#C792EA"); }
                 catch (Exception ex) { AppendText(log, $"\r\n[Send error: {ex.Message}]\r\n", "#E57373"); }
             }
             rowData.Send = SendCommand;
+            rowData.SendButton = send;
             send.Click += async (_, _) => await SendCommand();
-            text.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; await SendCommand(); } };
+            text.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; if (session.IsOpen) await SendCommand(); } };
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,70,55,70"), ColumnSpacing = 8, Margin = new Thickness(0, 0, 6, 0) }; row.Children.Add(text); row.Children.Add(hex); row.Children.Add(lf); row.Children.Add(send); Grid.SetColumn(hex, 1); Grid.SetColumn(lf, 2); Grid.SetColumn(send, 3); panel.Children.Add(row);
         }
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    private static void UpdateCommandState(TerminalView view)
+    {
+        foreach (var row in view.Rows)
+            if (row.SendButton is not null) row.SendButton.IsEnabled = view.Session.IsOpen;
     }
 
     private static void RestoreRows(List<CommandRow> rows, List<CommandConfig> saved)
@@ -607,7 +617,7 @@ public sealed class MainWindow : Window
             foreach (var view in _views.Values) SaveView(view);
             _config.Save();
         }
-        foreach (var view in _views.Values) { StopReconnect(view); view.OpenRequested = false; await view.Session.CloseAsync(); EndLogging(view.Log); }
+        foreach (var view in _views.Values) { StopReconnect(view); view.OpenRequested = false; if (_logWriters.ContainsKey(view.Log)) AppendText(view.Log, "\r\n[Connection closed]\r\n", "#E57373"); await view.Session.CloseAsync(); EndLogging(view.Log); }
         _logWriters.Clear(); _sharedLogWriters.Clear();
     }
 
@@ -623,7 +633,7 @@ public sealed class MainWindow : Window
     {
         public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required ScrollViewer LogScroll; public required ScrollViewer VtScroll; public required TextBlock FollowStatus; public required Button JumpToLive; public required VtTerminalControl VtTerminal; public required ComboBox Display; public required TextBlock ModeLabel; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public required Border[] Signals; public bool VtMode; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested; public bool AutoScrollEnabled = true; public bool HasPendingOutput; public bool ScrollQueued; public ScrollViewer ActiveScroll => VtMode ? VtScroll : LogScroll;
     }
-    private sealed class CommandRow { public TextBox? Text; public CheckBox? Hex; public CheckBox? Lf; public Func<Task>? Send; }
+    private sealed class CommandRow { public TextBox? Text; public CheckBox? Hex; public CheckBox? Lf; public Button? SendButton; public Func<Task>? Send; }
     private sealed class SerialPortOption
     {
         public string Name { get; }
