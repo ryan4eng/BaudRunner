@@ -149,7 +149,13 @@ public sealed class MainWindow : Window
         }
 
         var vtTerminal = new VtTerminalControl(); vtTerminal.SetTheme(IsLightTheme);
-        var tabView = new TerminalView { Tab = tab, Session = session, Log = log, VtTerminal = vtTerminal, Display = display, ModeLabel = modeLabel, Address = address, Port = kind == TransportKind.TcpServer || kind == TransportKind.UdpServer ? listenPort : remotePort, PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Rows = rows, Kind = kind, VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4, TimestampEnabled = saved.Timestamp, PauseDisplay = saved.Pause, TcpClients = tcpClients, DisconnectClient = disconnectClient, Signals = new[] { cts, dsr } };
+        var logScroll = new ScrollViewer { Content = log, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var followStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+        var jumpToLive = new Button { Content = "Jump to live output", IsVisible = false, Margin = new Thickness(12, 0, 0, 0) };
+        var tabView = new TerminalView { Tab = tab, Session = session, Log = log, LogScroll = logScroll, FollowStatus = followStatus, JumpToLive = jumpToLive, VtTerminal = vtTerminal, Display = display, ModeLabel = modeLabel, Address = address, Port = kind == TransportKind.TcpServer || kind == TransportKind.UdpServer ? listenPort : remotePort, PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Rows = rows, Kind = kind, VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4, TimestampEnabled = saved.Timestamp, PauseDisplay = saved.Pause, TcpClients = tcpClients, DisconnectClient = disconnectClient, Signals = new[] { cts, dsr } };
+        UpdateFollowStatus(tabView);
+        logScroll.ScrollChanged += (_, _) => UpdateFollowFromPosition(tabView);
+        jumpToLive.Click += (_, _) => FollowLiveOutput(tabView);
         session.BytesReceived += bytes => Dispatcher.UIThread.Post(() => { if (tabView.VtMode) vtTerminal.ProcessBytes(bytes.Span); else AppendBytes(log, display.SelectedIndex, bytes.Span); });
         vtTerminal.SendBytes += bytes => _ = session.SendAsync(bytes);
         session.Status += message => Dispatcher.UIThread.Post(() => AppendStatus(log, message));
@@ -176,9 +182,9 @@ public sealed class MainWindow : Window
         }
         rightPane.Children.Add(commands);
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("2*,3*"), ColumnSpacing = 12 };
-        var logScroll = new ScrollViewer { Content = log, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
         var vtScroll = new ScrollViewer { Content = vtTerminal, IsVisible = tabView.VtMode, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var logFooter = new Border { Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#E8EDF1" : "#191F27")), Padding = new Thickness(8, 5), Child = modeLabel };
+        var footerContent = new StackPanel { Orientation = Orientation.Horizontal, Children = { modeLabel, followStatus, jumpToLive } };
+        var logFooter = new Border { Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#E8EDF1" : "#191F27")), Padding = new Thickness(8, 5), Child = footerContent };
         var viewHost = new Grid(); viewHost.Children.Add(logScroll); viewHost.Children.Add(vtScroll);
         var logPane = new DockPanel(); DockPanel.SetDock(logFooter, Dock.Bottom); logPane.Children.Add(logFooter); logPane.Children.Add(viewHost);
         grid.Children.Add(logPane); Grid.SetColumn(rightPane, 1); grid.Children.Add(rightPane); tab.Content = grid;
@@ -327,7 +333,62 @@ public sealed class MainWindow : Window
 
     private void BeginLogging(TextBlock log) { if (_logWriters.ContainsKey(log)) return; Directory.CreateDirectory(_logDirectory); _logWriters[log] = new LogWriter(Path.Combine(_logDirectory, $"BaudRunner-{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.log")); }
     private void EndLogging(TextBlock log) { if (_logWriters.Remove(log, out var writer)) writer.Dispose(); }
-    private void AppendText(TextBlock log, string text, string? color = null) { log.Inlines ??= new InlineCollection(); log.Inlines.Add(new Run(text) { Foreground = new SolidColorBrush(Color.Parse(color ?? (IsLightTheme ? "#1F2937" : "#D6E2F0"))) }); if (_logWriters.TryGetValue(log, out var writer)) writer.Write(text); }
+    private void AppendText(TextBlock log, string text, string? color = null)
+    {
+        log.Inlines ??= new InlineCollection();
+        log.Inlines.Add(new Run(text) { Foreground = new SolidColorBrush(Color.Parse(color ?? (IsLightTheme ? "#1F2937" : "#D6E2F0"))) });
+        if (_logWriters.TryGetValue(log, out var writer)) writer.Write(text);
+
+        var view = _views.Values.FirstOrDefault(candidate => ReferenceEquals(candidate.Log, log));
+        if (view is null) return;
+        if (view.AutoScrollEnabled)
+        {
+            if (!view.ScrollQueued)
+            {
+                view.ScrollQueued = true;
+                Dispatcher.UIThread.Post(() =>
+                {
+                    view.ScrollQueued = false;
+                    if (view.AutoScrollEnabled) view.LogScroll.ScrollToEnd();
+                }, DispatcherPriority.Background);
+            }
+        }
+        else
+        {
+            view.HasPendingOutput = true;
+            UpdateFollowStatus(view);
+        }
+    }
+
+    private static void UpdateFollowFromPosition(TerminalView view)
+    {
+        var distanceFromBottom = view.LogScroll.Extent.Height - view.LogScroll.Offset.Y - view.LogScroll.Viewport.Height;
+        if (distanceFromBottom <= 16)
+        {
+            view.AutoScrollEnabled = true;
+            view.HasPendingOutput = false;
+        }
+        else if (view.LogScroll.Extent.Height > view.LogScroll.Viewport.Height)
+        {
+            view.AutoScrollEnabled = false;
+        }
+        UpdateFollowStatus(view);
+    }
+
+    private static void FollowLiveOutput(TerminalView view)
+    {
+        view.AutoScrollEnabled = true;
+        view.HasPendingOutput = false;
+        view.LogScroll.ScrollToEnd();
+        UpdateFollowStatus(view);
+    }
+
+    private static void UpdateFollowStatus(TerminalView view)
+    {
+        view.FollowStatus.Text = view.AutoScrollEnabled ? "● Following live output" : "Ⅱ Auto-scroll paused";
+        view.FollowStatus.Foreground = new SolidColorBrush(Color.Parse(view.AutoScrollEnabled ? "#2E7D32" : "#B26A00"));
+        view.JumpToLive.IsVisible = !view.AutoScrollEnabled;
+    }
     private void AppendStatus(TextBlock log, string message) { var color = message.Contains("open", StringComparison.OrdinalIgnoreCase) || message.Contains("connect", StringComparison.OrdinalIgnoreCase) ? "#2E7D32" : message.Contains("error", StringComparison.OrdinalIgnoreCase) || message.Contains("close", StringComparison.OrdinalIgnoreCase) || message.Contains("disconnect", StringComparison.OrdinalIgnoreCase) ? "#C62828" : null; AppendText(log, $"\r\n[{message}]\r\n", color); }
     private static void ClearLog(TextBlock log) => log.Inlines?.Clear();
     private static void ClearView(TerminalView view) { ClearLog(view.Log); view.VtTerminal.Clear(); }
@@ -384,7 +445,7 @@ public sealed class MainWindow : Window
 
     private sealed class TerminalView
     {
-        public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required VtTerminalControl VtTerminal; public required ComboBox Display; public required TextBlock ModeLabel; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public required Border[] Signals; public bool VtMode; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested;
+        public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required ScrollViewer LogScroll; public required TextBlock FollowStatus; public required Button JumpToLive; public required VtTerminalControl VtTerminal; public required ComboBox Display; public required TextBlock ModeLabel; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public required Border[] Signals; public bool VtMode; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested; public bool AutoScrollEnabled = true; public bool HasPendingOutput; public bool ScrollQueued;
     }
     private sealed class CommandRow { public TextBox? Text; public CheckBox? Hex; public CheckBox? Lf; public Func<Task>? Send; }
     private sealed class SerialPortOption
