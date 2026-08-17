@@ -72,8 +72,33 @@ public sealed class VtTerminalControl : UserControl
         else if (command == 'K' && (values.Length == 0 || values[0] == 2)) RemoveLastLine();
     }
 
-    private void AppendText(string value) => _screen.Inlines!.Add(new Run(value) { Foreground = _foreground });
-    private void RemoveLastCharacter() { if (_screen.Inlines is { Count: > 0 } inlines && inlines[^1] is Run run && !string.IsNullOrEmpty(run.Text)) run.Text = run.Text[..^1]; }
+    private void AppendText(string value)
+    {
+        if (_screen.Inlines is not { } inlines) return;
+
+        // Keep contiguous text in one Run. Adding one Inline per byte makes
+        // every edit (notably backspace) re-layout the entire terminal.
+        if (inlines.Count > 0 && inlines[^1] is Run last && Equals(last.Foreground, _foreground))
+        {
+            last.Text += value;
+            return;
+        }
+
+        inlines.Add(new Run(value) { Foreground = _foreground });
+    }
+
+    private void RemoveLastCharacter()
+    {
+        if (_screen.Inlines is not { Count: > 0 } inlines) return;
+
+        // Remove empty runs left by an earlier backspace so the inline tree
+        // stays compact and Avalonia has less work to do on each edit.
+        while (inlines.Count > 0 && inlines[^1] is Run empty && string.IsNullOrEmpty(empty.Text))
+            inlines.RemoveAt(inlines.Count - 1);
+
+        if (inlines.Count == 0 || inlines[^1] is not Run run || string.IsNullOrEmpty(run.Text)) return;
+        run.Text = run.Text[..^1];
+    }
     private void RemoveLastLine() { if (_screen.Inlines is { Count: > 0 } inlines) inlines.RemoveAt(inlines.Count - 1); }
     private void OnTextInput(object? sender, TextInputEventArgs e) { if (!string.IsNullOrEmpty(e.Text)) SendBytes?.Invoke(Encoding.ASCII.GetBytes(e.Text)); }
     private void OnKeyDown(object? sender, KeyEventArgs e)
