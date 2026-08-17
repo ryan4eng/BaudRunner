@@ -49,6 +49,8 @@ For example, consecutive local runs produce `v2.0.0-rc1`, `v2.0.0-rc2`, and so o
 
 When the same script runs in GitHub Actions for a `release/v2.x.y` tag, it automatically switches to official release mode and writes the four ZIPs under `release/v2.x.y`. Manual `Run workflow` executions use release-candidate mode and upload artifacts only.
 
+After an official release, the workflow creates the patch-version PR, approves it, and squash-merges it automatically. Configure the repository's `RELEASE_APPROVER_TOKEN` secret with a fine-grained token belonging to a user or bot that is allowed to approve and merge pull requests. It must be a different identity from the workflow's PR creator.
+
 Framework-dependent packages require the matching .NET runtime. Self-contained packages include .NET and are larger.
 
 Logs are always written under the platform's local application data directory in `BaudRunner/logs`. Configuration is stored beside it as `BaudRunner/config.json`.

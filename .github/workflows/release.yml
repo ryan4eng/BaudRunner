@@ -112,6 +112,7 @@ jobs:
         run: .\scripts\publish.ps1 -BumpVersionOnly
 
       - name: Open version bump pull request
+        id: version-bump-pr
         uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "chore: bump patch version after ${{ github.ref_name }}"
@@ -119,3 +120,24 @@ jobs:
           body: "Bumps the BaudRunner patch version after release ${{ github.ref_name }}."
           branch: chore/bump-version
           delete-branch: true
+
+      - name: Approve version bump pull request
+        if: steps.version-bump-pr.outputs.pull-request-url != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_APPROVER_TOKEN }}
+          PR_URL: ${{ steps.version-bump-pr.outputs.pull-request-url }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'The RELEASE_APPROVER_TOKEN secret is required to approve the version bump PR.'
+          }
+          gh pr review $env:PR_URL --approve --body 'Automatically approved version bump after successful release.'
+
+      - name: Squash merge version bump pull request
+        if: steps.version-bump-pr.outputs.pull-request-url != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_APPROVER_TOKEN }}
+          PR_URL: ${{ steps.version-bump-pr.outputs.pull-request-url }}
+        run: |
+          gh pr merge $env:PR_URL --squash --delete-branch
