@@ -343,15 +343,7 @@ public sealed class MainWindow : Window
         if (view is null) return;
         if (view.AutoScrollEnabled)
         {
-            if (!view.ScrollQueued)
-            {
-                view.ScrollQueued = true;
-                Dispatcher.UIThread.Post(() =>
-                {
-                    view.ScrollQueued = false;
-                    if (view.AutoScrollEnabled) view.LogScroll.ScrollToEnd();
-                }, DispatcherPriority.Background);
-            }
+            QueueScrollToEnd(view);
         }
         else
         {
@@ -362,6 +354,10 @@ public sealed class MainWindow : Window
 
     private static void UpdateFollowFromPosition(TerminalView view)
     {
+        // Extent/offset changes caused by appended content arrive before the
+        // layout pass that can actually move the viewport to the end.
+        if (view.ScrollQueued) return;
+
         var distanceFromBottom = view.LogScroll.Extent.Height - view.LogScroll.Offset.Y - view.LogScroll.Viewport.Height;
         if (distanceFromBottom <= 16)
         {
@@ -373,6 +369,26 @@ public sealed class MainWindow : Window
             view.AutoScrollEnabled = false;
         }
         UpdateFollowStatus(view);
+    }
+
+    private static void QueueScrollToEnd(TerminalView view)
+    {
+        if (view.ScrollQueued) return;
+
+        view.ScrollQueued = true;
+        EventHandler? layoutHandler = null;
+        layoutHandler = (_, _) =>
+        {
+            view.LogScroll.LayoutUpdated -= layoutHandler;
+            view.ScrollQueued = false;
+            if (view.AutoScrollEnabled)
+            {
+                view.LogScroll.ScrollToEnd();
+                view.HasPendingOutput = false;
+            }
+            UpdateFollowFromPosition(view);
+        };
+        view.LogScroll.LayoutUpdated += layoutHandler;
     }
 
     private static void FollowLiveOutput(TerminalView view)
