@@ -112,7 +112,7 @@ jobs:
         run: .\scripts\publish.ps1 -BumpVersionOnly
 
       - name: Open version bump pull request
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "chore: bump patch version after ${{ github.ref_name }}"
           title: "chore: bump patch version after ${{ github.ref_name }}"
