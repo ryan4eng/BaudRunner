@@ -9,7 +9,7 @@ namespace BaudRunner;
 /// <summary>A compact VT100/VT1xx terminal surface for interactive serial sessions.</summary>
 public sealed class VtTerminalControl : UserControl
 {
-    private readonly TextBlock _screen = new() { TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Cascadia Mono,Consolas,monospace"), FontSize = 13, Padding = new Avalonia.Thickness(8) };
+    private readonly SelectableTextBlock _screen = new() { TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Cascadia Mono,Consolas,monospace"), FontSize = 13, Padding = new Avalonia.Thickness(8) };
     private readonly StringBuilder _escape = new();
     private bool _inEscape;
     private bool _inCsi;
@@ -68,7 +68,12 @@ public sealed class VtTerminalControl : UserControl
                 else if (value is >= 90 and <= 97) _foreground = new SolidColorBrush(Color.Parse(new[] { "#757575", "#EF5350", "#66BB6A", "#FFEE58", "#42A5F5", "#AB47BC", "#26C6DA", "#FFFFFF" }[value - 90]));
             }
         }
-        else if (command == 'J' && (values.Length == 0 || values[0] == 2)) Clear();
+        // ED's omitted parameter means 0 (erase from the cursor to the end
+        // of the display), not 2 (erase the entire display). We do not yet
+        // model a cursor/grid, so leave partial erases alone rather than
+        // destroying the complete scrollback. Only an explicit ESC[2J is a
+        // safe full-screen clear.
+        else if (command == 'J' && values.Length > 0 && values[0] == 2) Clear();
         else if (command == 'K' && (values.Length == 0 || values[0] == 2)) RemoveLastLine();
     }
 
