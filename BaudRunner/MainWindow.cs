@@ -150,13 +150,15 @@ public sealed class MainWindow : Window
 
         var vtTerminal = new VtTerminalControl(); vtTerminal.SetTheme(IsLightTheme);
         var logScroll = new ScrollViewer { Content = log, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var vtScroll = new ScrollViewer { Content = vtTerminal, IsVisible = false, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
         var followStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
         var jumpToLive = new Button { Content = "Jump to live output", IsVisible = false, Margin = new Thickness(12, 0, 0, 0) };
-        var tabView = new TerminalView { Tab = tab, Session = session, Log = log, LogScroll = logScroll, FollowStatus = followStatus, JumpToLive = jumpToLive, VtTerminal = vtTerminal, Display = display, ModeLabel = modeLabel, Address = address, Port = kind == TransportKind.TcpServer || kind == TransportKind.UdpServer ? listenPort : remotePort, PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Rows = rows, Kind = kind, VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4, TimestampEnabled = saved.Timestamp, PauseDisplay = saved.Pause, TcpClients = tcpClients, DisconnectClient = disconnectClient, Signals = new[] { cts, dsr } };
+        var tabView = new TerminalView { Tab = tab, Session = session, Log = log, LogScroll = logScroll, VtScroll = vtScroll, FollowStatus = followStatus, JumpToLive = jumpToLive, VtTerminal = vtTerminal, Display = display, ModeLabel = modeLabel, Address = address, Port = kind == TransportKind.TcpServer || kind == TransportKind.UdpServer ? listenPort : remotePort, PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Rows = rows, Kind = kind, VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4, TimestampEnabled = saved.Timestamp, PauseDisplay = saved.Pause, TcpClients = tcpClients, DisconnectClient = disconnectClient, Signals = new[] { cts, dsr } };
         UpdateFollowStatus(tabView);
         logScroll.ScrollChanged += (_, _) => UpdateFollowFromPosition(tabView);
+        vtScroll.ScrollChanged += (_, _) => UpdateFollowFromPosition(tabView);
         jumpToLive.Click += (_, _) => FollowLiveOutput(tabView);
-        session.BytesReceived += bytes => Dispatcher.UIThread.Post(() => { if (tabView.VtMode) vtTerminal.ProcessBytes(bytes.Span); else AppendBytes(log, display.SelectedIndex, bytes.Span); });
+        session.BytesReceived += bytes => Dispatcher.UIThread.Post(() => { if (tabView.VtMode) { vtTerminal.ProcessBytes(bytes.Span); QueueScrollToEnd(tabView); } else AppendBytes(log, display.SelectedIndex, bytes.Span); });
         vtTerminal.SendBytes += bytes => _ = session.SendAsync(bytes);
         session.Status += message => Dispatcher.UIThread.Post(() => AppendStatus(log, message));
         session.LineStatusChanged += (ctsState, dsrState) => Dispatcher.UIThread.Post(() => { SetSignal(cts, ctsState); SetSignal(dsr, dsrState); });
@@ -183,7 +185,7 @@ public sealed class MainWindow : Window
         }
         rightPane.Children.Add(commands);
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("2*,3*"), ColumnSpacing = 12 };
-        var vtScroll = new ScrollViewer { Content = vtTerminal, IsVisible = tabView.VtMode, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
+        vtScroll.IsVisible = tabView.VtMode;
         var footerContent = new StackPanel { Orientation = Orientation.Horizontal, Children = { modeLabel, followStatus, jumpToLive } };
         var logFooter = new Border { Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#E8EDF1" : "#191F27")), Padding = new Thickness(8, 5), Child = footerContent };
         var viewHost = new Grid(); viewHost.Children.Add(logScroll); viewHost.Children.Add(vtScroll);
@@ -201,7 +203,7 @@ public sealed class MainWindow : Window
         open.Click += async (_, _) => { tabView.OpenRequested = true; try { await Connect(); } catch (Exception ex) { AppendText(log, $"\r\n[Open error: {ex.Message}]\r\n", "#E57373"); if (autoReconnect.IsChecked == true) StartReconnect(tabView, Connect); } };
         close.Click += async (_, _) => { tabView.OpenRequested = false; StopReconnect(tabView); await session.CloseAsync(); EndLogging(log); if (portList is not null) portList.IsEnabled = true; AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); open.IsEnabled = true; close.IsEnabled = false; };
         clear.Click += (_, _) => ClearLog(log);
-        display.SelectionChanged += (_, _) => { tabView.VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4; UpdateDisplayStatus(tabView); logScroll.IsVisible = !tabView.VtMode; vtScroll.IsVisible = tabView.VtMode; if (tabView.VtMode) vtTerminal.Focus(); };
+        display.SelectionChanged += (_, _) => { tabView.VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4; tabView.AutoScrollEnabled = true; tabView.HasPendingOutput = false; UpdateDisplayStatus(tabView); UpdateFollowStatus(tabView); logScroll.IsVisible = !tabView.VtMode; vtScroll.IsVisible = tabView.VtMode; if (tabView.VtMode) { vtTerminal.Focus(); FollowLiveOutput(tabView); } };
         rts.IsCheckedChanged += (_, _) => session.SetRts(rts.IsChecked == true); dtr.IsCheckedChanged += (_, _) => session.SetDtr(dtr.IsChecked == true);
         if (tcpClients is not null) tcpClients.SelectionChanged += (_, _) => { tabView.SelectedClientId = (tcpClients.SelectedItem as TcpClientInfo)?.Id; if (disconnectClient is not null) disconnectClient.IsEnabled = tabView.SelectedClientId is not null; };
         if (disconnectClient is not null) disconnectClient.Click += (_, _) => { if (tabView.SelectedClientId is int id) session.DisconnectTcpClient(id); };
@@ -371,13 +373,14 @@ public sealed class MainWindow : Window
         // layout pass that can actually move the viewport to the end.
         if (view.ScrollQueued) return;
 
-        var distanceFromBottom = view.LogScroll.Extent.Height - view.LogScroll.Offset.Y - view.LogScroll.Viewport.Height;
+        var scroll = view.ActiveScroll;
+        var distanceFromBottom = scroll.Extent.Height - scroll.Offset.Y - scroll.Viewport.Height;
         if (distanceFromBottom <= 16)
         {
             view.AutoScrollEnabled = true;
             view.HasPendingOutput = false;
         }
-        else if (view.LogScroll.Extent.Height > view.LogScroll.Viewport.Height)
+        else if (scroll.Extent.Height > scroll.Viewport.Height)
         {
             view.AutoScrollEnabled = false;
         }
@@ -389,25 +392,27 @@ public sealed class MainWindow : Window
         if (view.ScrollQueued) return;
 
         view.ScrollQueued = true;
+        var scroll = view.ActiveScroll;
         EventHandler? layoutHandler = null;
         layoutHandler = (_, _) =>
         {
-            view.LogScroll.LayoutUpdated -= layoutHandler;
+            scroll.LayoutUpdated -= layoutHandler;
             view.ScrollQueued = false;
             if (view.AutoScrollEnabled)
             {
-                view.LogScroll.ScrollToEnd();
+                scroll.ScrollToEnd();
                 view.HasPendingOutput = false;
             }
             UpdateFollowFromPosition(view);
         };
-        view.LogScroll.LayoutUpdated += layoutHandler;
+        scroll.LayoutUpdated += layoutHandler;
     }
 
     private static void FollowLiveOutput(TerminalView view)
     {
         view.AutoScrollEnabled = true;
         view.HasPendingOutput = false;
+        view.ActiveScroll.ScrollToEnd();
         view.LogScroll.ScrollToEnd();
         UpdateFollowStatus(view);
     }
@@ -474,7 +479,7 @@ public sealed class MainWindow : Window
 
     private sealed class TerminalView
     {
-        public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required ScrollViewer LogScroll; public required TextBlock FollowStatus; public required Button JumpToLive; public required VtTerminalControl VtTerminal; public required ComboBox Display; public required TextBlock ModeLabel; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public required Border[] Signals; public bool VtMode; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested; public bool AutoScrollEnabled = true; public bool HasPendingOutput; public bool ScrollQueued;
+        public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required ScrollViewer LogScroll; public required ScrollViewer VtScroll; public required TextBlock FollowStatus; public required Button JumpToLive; public required VtTerminalControl VtTerminal; public required ComboBox Display; public required TextBlock ModeLabel; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public required Border[] Signals; public bool VtMode; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested; public bool AutoScrollEnabled = true; public bool HasPendingOutput; public bool ScrollQueued; public ScrollViewer ActiveScroll => VtMode ? VtScroll : LogScroll;
     }
     private sealed class CommandRow { public TextBox? Text; public CheckBox? Hex; public CheckBox? Lf; public Func<Task>? Send; }
     private sealed class SerialPortOption
