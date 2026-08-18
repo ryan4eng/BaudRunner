@@ -9,6 +9,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Documents;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform;
@@ -19,13 +20,17 @@ namespace BaudRunner;
 
 public sealed class MainWindow : Window
 {
+    private const string HexByteColor = "#9E9E9E";
+    private const string HexDigits = "0123456789ABCDEF";
+    private static readonly Dictionary<string, IBrush> _brushCache = new();
+    private static readonly Dictionary<string, string> _portDescriptions = new(StringComparer.OrdinalIgnoreCase);
     private static string FullVersion => typeof(MainWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "v2.0.0";
     private static string AppVersion => FullVersion.Split('+', 2)[0];
     private readonly Dictionary<TabItem, TerminalView> _views = new();
     private readonly Dictionary<TerminalView, CancellationTokenSource> _reconnects = new();
     private readonly string _logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BaudRunner", "logs");
     private readonly AppConfig _config;
-    private readonly Dictionary<TextBlock, LogWriter> _logWriters = new();
+    private readonly Dictionary<LogView, LogWriter> _logWriters = new();
     private readonly Dictionary<string, SharedLogWriter> _sharedLogWriters = new(StringComparer.OrdinalIgnoreCase);
     private Menu? _mainMenu;
     private TabControl? _tabs;
@@ -41,6 +46,11 @@ public sealed class MainWindow : Window
         try { Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://BaudRunner/AppIcon.png"))); } catch { }
         Content = BuildShell();
         Closing += async (_, _) => await ShutdownAsync();
+
+        // Test/automation hook: `BaudRunner --auto-open` opens the serial tab's
+        // saved connection on startup.
+        if (Environment.GetCommandLineArgs().Contains("--auto-open"))
+            Opened += (_, _) => _views.Values.FirstOrDefault(view => view.Kind == TransportKind.Serial)?.OpenButton?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     }
 
     private Control BuildShell()
@@ -92,8 +102,7 @@ public sealed class MainWindow : Window
     {
         var saved = _config.Terminals.TryGetValue(title, out var value) ? value : new TerminalConfig();
         var session = new TransportSession(kind);
-        var log = new SelectableTextBlock { TextWrapping = TextWrapping.NoWrap, FontFamily = new FontFamily("Cascadia Mono,Consolas,monospace"), FontSize = 13, Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#FFFFFF" : "#0B0E12")), Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#1F2937" : "#D6E2F0")), Padding = new Thickness(8) };
-        ScrollViewer.SetVerticalScrollBarVisibility(log, ScrollBarVisibility.Auto); ScrollViewer.SetHorizontalScrollBarVisibility(log, ScrollBarVisibility.Auto);
+        var log = new LogView(); log.SetTheme(IsLightTheme);
         var display = kind == TransportKind.Serial ? Combo("Normal", "Hex (all bytes)", "Hex (except CR/LF)", "ASCII only", "VT100 terminal") : Combo("Normal", "Hex (all bytes)", "Hex (except CR/LF)", "ASCII only"); display.SelectedIndex = Math.Clamp(saved.DisplayMode, 0, kind == TransportKind.Serial ? 4 : 3);
         var modeLabel = new TextBlock { Text = $"Mode: {display.SelectedItem}  |  Timestamps: {(saved.Timestamp ? "On" : "Off")}  |  Paused: {(saved.Pause ? "Yes" : "No")}", FontSize = 12, FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#52606D" : "#B8C2CC")) };
         var tab = new TabItem { Header = title };
@@ -155,12 +164,12 @@ public sealed class MainWindow : Window
         var vtScroll = new ScrollViewer { Content = vtTerminal, IsVisible = false, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
         var followStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
         var jumpToLive = new Button { Content = "Jump to live output", IsVisible = false, Margin = new Thickness(12, 0, 0, 0) };
-        var tabView = new TerminalView { Tab = tab, Session = session, Log = log, LogScroll = logScroll, VtScroll = vtScroll, FollowStatus = followStatus, JumpToLive = jumpToLive, VtTerminal = vtTerminal, Display = display, ModeLabel = modeLabel, Address = address, Port = kind == TransportKind.TcpServer || kind == TransportKind.UdpServer ? listenPort : remotePort, PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Rows = rows, Kind = kind, VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4, TimestampEnabled = saved.Timestamp, PauseDisplay = saved.Pause, TcpClients = tcpClients, DisconnectClient = disconnectClient, Signals = new[] { cts, dsr } };
+        var tabView = new TerminalView { Tab = tab, Session = session, Log = log, LogScroll = logScroll, VtScroll = vtScroll, FollowStatus = followStatus, JumpToLive = jumpToLive, VtTerminal = vtTerminal, Display = display, ModeLabel = modeLabel, Address = address, Port = kind == TransportKind.TcpServer || kind == TransportKind.UdpServer ? listenPort : remotePort, PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Rows = rows, Kind = kind, OpenButton = open, VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4, TimestampEnabled = saved.Timestamp, PauseDisplay = saved.Pause, TcpClients = tcpClients, DisconnectClient = disconnectClient, Signals = new[] { cts, dsr } };
         UpdateFollowStatus(tabView);
         logScroll.ScrollChanged += (_, _) => UpdateFollowFromPosition(tabView);
         vtScroll.ScrollChanged += (_, _) => UpdateFollowFromPosition(tabView);
         jumpToLive.Click += (_, _) => FollowLiveOutput(tabView);
-        session.BytesReceived += bytes => Dispatcher.UIThread.Post(() => { if (tabView.VtMode) { vtTerminal.ProcessBytes(bytes.Span); QueueScrollToEnd(tabView); } else AppendBytes(log, display.SelectedIndex, bytes.Span); });
+        session.BytesReceived += bytes => EnqueueBytes(tabView, bytes);
         vtTerminal.SendBytes += bytes => _ = session.SendAsync(bytes);
         session.Status += message => Dispatcher.UIThread.Post(() => AppendStatus(log, message));
         session.LineStatusChanged += (ctsState, dsrState) => Dispatcher.UIThread.Post(() => { SetSignal(cts, ctsState); SetSignal(dsr, dsrState); });
@@ -169,7 +178,7 @@ public sealed class MainWindow : Window
         var commands = BuildCommands(session, log, rows, () => tabView.SelectedClientId, kind == TransportKind.TcpServer, kind == TransportKind.Serial, () => tabView.VtMode);
         RestoreRows(rows, saved.Commands);
         UpdateCommandState(tabView);
-        var logContextMenu = BuildLogContextMenu(tabView, () => !string.IsNullOrEmpty(log.SelectedText), log.Copy);
+        var logContextMenu = BuildLogContextMenu(tabView, () => log.HasSelection, log.Copy);
         var vtContextMenu = BuildLogContextMenu(tabView, () => vtTerminal.HasSelection, vtTerminal.Copy);
         log.ContextMenu = logContextMenu;
         vtTerminal.SetContextMenu(vtContextMenu);
@@ -206,7 +215,7 @@ public sealed class MainWindow : Window
         }
         open.Click += async (_, _) => { tabView.OpenRequested = true; try { await Connect(); } catch (Exception ex) { UpdateCommandState(tabView); AppendText(log, $"\r\n[Open error: {ex.Message}]\r\n", "#E57373"); EndLogging(log); if (autoReconnect.IsChecked == true) StartReconnect(tabView, Connect); } };
         close.Click += async (_, _) => { tabView.OpenRequested = false; StopReconnect(tabView); await session.CloseAsync(); UpdateCommandState(tabView); if (portList is not null) portList.IsEnabled = true; AppendText(log, "\r\n[Connection closed]\r\n", "#E57373"); EndLogging(log); open.IsEnabled = true; close.IsEnabled = false; };
-        clear.Click += (_, _) => ClearLog(log);
+        clear.Click += (_, _) => ClearLog(tabView);
         display.SelectionChanged += (_, _) => { tabView.VtMode = kind == TransportKind.Serial && display.SelectedIndex == 4; tabView.AutoScrollEnabled = true; tabView.HasPendingOutput = false; UpdateDisplayStatus(tabView); UpdateFollowStatus(tabView); logScroll.IsVisible = !tabView.VtMode; vtScroll.IsVisible = tabView.VtMode; if (tabView.VtMode) { vtTerminal.Focus(); FollowLiveOutput(tabView); } };
         rts.IsCheckedChanged += (_, _) => session.SetRts(rts.IsChecked == true); dtr.IsCheckedChanged += (_, _) => session.SetDtr(dtr.IsChecked == true);
         if (tcpClients is not null) tcpClients.SelectionChanged += (_, _) => { tabView.SelectedClientId = (tcpClients.SelectedItem as TcpClientInfo)?.Id; if (disconnectClient is not null) disconnectClient.IsEnabled = tabView.SelectedClientId is not null; };
@@ -227,7 +236,7 @@ public sealed class MainWindow : Window
         Application.Current!.RequestedThemeVariant = variant; _config.Theme = variant == ThemeVariant.Light ? "Light" : "Dark";
         Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#F3F5F7" : "#11151B"));
         if (_mainMenu is not null) _mainMenu.Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#E3E7EB" : "#191F27"));
-        foreach (var view in _views.Values) { view.Log.Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#FFFFFF" : "#0B0E12")); view.Log.Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#1F2937" : "#D6E2F0")); view.VtTerminal.SetTheme(IsLightTheme); foreach (var signal in view.Signals) SetSignal(signal, signal.Tag is true); }
+        foreach (var view in _views.Values) { view.Log.SetTheme(IsLightTheme); view.VtTerminal.SetTheme(IsLightTheme); foreach (var signal in view.Signals) SetSignal(signal, signal.Tag is true); }
     }
 
     private ContextMenu BuildLogContextMenu(TerminalView view, Func<bool> hasSelection, Action copySelection)
@@ -347,7 +356,23 @@ public sealed class MainWindow : Window
         Process.Start(startInfo);
     }
 
-    private static void RefreshSerialPorts(ComboBox list, string? preferred)
+    private static async void RefreshSerialPorts(ComboBox list, string? preferred)
+    {
+        // Populate immediately from the cheap port-name enumeration plus cached
+        // descriptions; the WMI query is slow (hundreds of ms) so it runs in the
+        // background and re-applies only when it learned something new.
+        ApplySerialPorts(list, preferred);
+        if (!OperatingSystem.IsWindows()) return;
+        var fresh = await Task.Run(QueryWindowsPortDescriptions);
+        var changed = false;
+        foreach (var (port, description) in fresh)
+        {
+            if (!_portDescriptions.TryGetValue(port, out var existing) || !string.Equals(existing, description, StringComparison.Ordinal)) { _portDescriptions[port] = description; changed = true; }
+        }
+        if (changed) ApplySerialPorts(list, (list.SelectedItem as SerialPortOption)?.Name);
+    }
+
+    private static void ApplySerialPorts(ComboBox list, string? preferred)
     {
         var current = preferred ?? (list.SelectedItem as SerialPortOption)?.Name;
         var ports = GetSerialPorts();
@@ -359,22 +384,25 @@ public sealed class MainWindow : Window
     private static List<SerialPortOption> GetSerialPorts()
     {
         var names = SerialPort.GetPortNames().OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+        return names.Select(name => new SerialPortOption(name, _portDescriptions.TryGetValue(name, out var description) ? $"{name} <{description}>" : name)).ToList();
+    }
+
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private static Dictionary<string, string> QueryWindowsPortDescriptions()
+    {
         var descriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (OperatingSystem.IsWindows())
+        try
         {
-            try
+            using var searcher = new ManagementObjectSearcher("SELECT Name, DeviceID FROM Win32_PnPEntity WHERE Name LIKE '%(COM%'");
+            foreach (ManagementObject device in searcher.Get())
             {
-                using var searcher = new ManagementObjectSearcher("SELECT Name, DeviceID FROM Win32_PnPEntity WHERE Name LIKE '%(COM%'");
-                foreach (ManagementObject device in searcher.Get())
-                {
-                    var name = device["Name"]?.ToString();
-                    var match = System.Text.RegularExpressions.Regex.Match(name ?? "", @"\((COM\d+)\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (match.Success && !string.IsNullOrWhiteSpace(name)) descriptions[match.Groups[1].Value] = name[..name.LastIndexOf(" (", StringComparison.Ordinal)];
-                }
+                var name = device["Name"]?.ToString();
+                var match = System.Text.RegularExpressions.Regex.Match(name ?? "", @"\((COM\d+)\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (match.Success && !string.IsNullOrWhiteSpace(name)) descriptions[match.Groups[1].Value] = name[..name.LastIndexOf(" (", StringComparison.Ordinal)];
             }
-            catch { }
         }
-        return names.Select(name => new SerialPortOption(name, descriptions.TryGetValue(name, out var description) ? $"{name} <{description}>" : name)).ToList();
+        catch { }
+        return descriptions;
     }
 
     private static void UpdateTcpClients(TerminalView view, IReadOnlyList<TcpClientInfo> clients)
@@ -388,7 +416,7 @@ public sealed class MainWindow : Window
         if (view.DisconnectClient is not null) view.DisconnectClient.IsEnabled = view.SelectedClientId is not null;
     }
 
-    private Control BuildCommands(TransportSession session, TextBlock log, List<CommandRow> rows, Func<int?> selectedClient, bool serverTargeted = false, bool defaultLf = false, Func<bool>? isVtMode = null)
+    private Control BuildCommands(TransportSession session, LogView log, List<CommandRow> rows, Func<int?> selectedClient, bool serverTargeted = false, bool defaultLf = false, Func<bool>? isVtMode = null)
     {
         var panel = new StackPanel { Spacing = 5 }; panel.Children.Add(new TextBlock { Text = "Quick commands", FontSize = 16, FontWeight = FontWeight.Bold, Margin = new Thickness(0, 0, 0, 0) });
         if (serverTargeted) panel.Children.Add(new TextBlock { Text = "Send to selected client", FontSize = 12, Foreground = new SolidColorBrush(Color.Parse("#8BA4BB")), Margin = new Thickness(0, 0, 0, 4) });
@@ -421,20 +449,88 @@ public sealed class MainWindow : Window
         for (var i = 0; i < Math.Min(rows.Count, saved.Count); i++) { rows[i].Text!.Text = saved[i].Text; rows[i].Hex!.IsChecked = saved[i].Hex; rows[i].Lf!.IsChecked = saved[i].Lf; }
     }
 
-    private void AppendBytes(TextBlock log, int mode, ReadOnlySpan<byte> bytes)
+    private void EnqueueBytes(TerminalView view, ReadOnlyMemory<byte> bytes)
     {
-        var view = _views.Values.FirstOrDefault(candidate => ReferenceEquals(candidate.Log, log)); if (view?.PauseDisplay == true) return; var sb = new StringBuilder(); if (view?.TimestampEnabled == true) sb.Append($"[{DateTime.Now:HH:mm:ss.fff}] ");
-        if (sb.Length > 0) AppendText(log, sb.ToString());
-        foreach (var b in bytes)
+        // Coalesce receive chunks off the UI thread and drain them at most once
+        // per dispatcher pass. Posting one UI update per serial chunk cannot keep
+        // up at high baud rates; batching keeps layout cost per frame, not per read.
+        bool schedule;
+        lock (view.PendingLock)
         {
-            if (mode == 1 || (mode == 2 && b is not (10 or 13))) AppendText(log, $"{{{b:X2}}}", "#9E9E9E");
-            else if (mode == 3 && (b < 32 || b > 126) && b is not (10 or 13)) { }
-            else if (b is 9 or 10 or 13 || b is >= 0x20 and <= 0x7E) AppendText(log, ((char)b).ToString());
-            else AppendText(log, $"{{{b:X2}}}", "#9E9E9E");
+            view.PendingChunks.Add(bytes);
+            schedule = !view.DrainScheduled;
+            view.DrainScheduled = true;
+        }
+        if (schedule) Dispatcher.UIThread.Post(() => DrainPending(view), DispatcherPriority.Background);
+    }
+
+    private void DrainPending(TerminalView view)
+    {
+        ReadOnlyMemory<byte>[] chunks;
+        lock (view.PendingLock)
+        {
+            view.DrainScheduled = false;
+            if (view.PendingChunks.Count == 0) return;
+            chunks = view.PendingChunks.ToArray();
+            view.PendingChunks.Clear();
+        }
+        if (view.VtMode)
+        {
+            foreach (var chunk in chunks) view.VtTerminal.ProcessBytes(chunk.Span);
+
+            // VT sessions log the raw byte stream (escape sequences included) so
+            // the file still captures everything the device sent.
+            if (_logWriters.TryGetValue(view.Log, out var writer))
+                foreach (var chunk in chunks) writer.Write(Encoding.Latin1.GetString(chunk.Span));
+            QueueScrollToEnd(view);
+        }
+        else if (chunks.Length == 1) AppendBytes(view, view.Display.SelectedIndex, chunks[0].Span);
+        else
+        {
+            var total = 0; foreach (var chunk in chunks) total += chunk.Length;
+            var combined = new byte[total]; var offset = 0;
+            foreach (var chunk in chunks) { chunk.Span.CopyTo(combined.AsSpan(offset)); offset += chunk.Length; }
+            AppendBytes(view, view.Display.SelectedIndex, combined);
         }
     }
 
-    private bool BeginLogging(TextBlock log, out string? error)
+    private void AppendBytes(TerminalView view, int mode, ReadOnlySpan<byte> bytes)
+    {
+        // Build one string per contiguous colour span and hand the whole batch to
+        // the log control in a single call.
+        var segments = new List<(string Text, IBrush? Brush)>();
+        if (view.TimestampEnabled) segments.Add(($"[{DateTime.Now:HH:mm:ss.fff}] ", null));
+        var segment = new StringBuilder(Math.Min(bytes.Length + 8, 64 * 1024));
+        var segmentHex = false;
+        var hasSegment = false;
+        foreach (var b in bytes)
+        {
+            bool hex;
+            if (mode == 1 || (mode == 2 && b is not (10 or 13))) hex = true;
+            else if (mode == 3 && (b < 32 || b > 126) && b is not (10 or 13)) continue;
+            else if (b is 9 or 10 or 13 || b is >= 0x20 and <= 0x7E) hex = false;
+            else hex = true;
+            if (hasSegment && hex != segmentHex)
+            {
+                segments.Add((segment.ToString(), segmentHex ? GetBrush(HexByteColor) : null));
+                segment.Clear();
+            }
+            segmentHex = hex; hasSegment = true;
+            if (hex) segment.Append('{').Append(HexDigits[b >> 4]).Append(HexDigits[b & 0xF]).Append('}');
+            else segment.Append((char)b);
+        }
+        if (hasSegment && segment.Length > 0) segments.Add((segment.ToString(), segmentHex ? GetBrush(HexByteColor) : null));
+        if (segments.Count == 0) return;
+
+        // The file log always records received data; pausing only stops the display.
+        if (_logWriters.TryGetValue(view.Log, out var writer)) { foreach (var (text, _) in segments) writer.Write(text); }
+        if (view.PauseDisplay) return;
+        view.Log.AppendSegments(segments);
+        if (view.AutoScrollEnabled) QueueScrollToEnd(view);
+        else { view.HasPendingOutput = true; UpdateFollowStatus(view); }
+    }
+
+    private bool BeginLogging(LogView log, out string? error)
     {
         error = null;
         if (_logWriters.ContainsKey(log)) return true;
@@ -483,7 +579,7 @@ public sealed class MainWindow : Window
         return candidates.Distinct(StringComparer.OrdinalIgnoreCase);
     }
 
-    private void EndLogging(TextBlock log)
+    private void EndLogging(LogView log)
     {
         if (!_logWriters.Remove(log, out var writer)) return;
         var shared = _sharedLogWriters.Values.FirstOrDefault(candidate => ReferenceEquals(candidate.Writer, writer));
@@ -495,10 +591,9 @@ public sealed class MainWindow : Window
             _sharedLogWriters.Remove(shared.FilePath);
         }
     }
-    private void AppendText(TextBlock log, string text, string? color = null)
+    private void AppendText(LogView log, string text, string? color = null)
     {
-        log.Inlines ??= new InlineCollection();
-        log.Inlines.Add(new Run(text) { Foreground = new SolidColorBrush(Color.Parse(color ?? (IsLightTheme ? "#1F2937" : "#D6E2F0"))) });
+        log.Append(text, color is null ? null : GetBrush(color));
         if (_logWriters.TryGetValue(log, out var writer)) writer.Write(text);
 
         var view = _views.Values.FirstOrDefault(candidate => ReferenceEquals(candidate.Log, log));
@@ -512,6 +607,12 @@ public sealed class MainWindow : Window
             view.HasPendingOutput = true;
             UpdateFollowStatus(view);
         }
+    }
+
+    private static IBrush GetBrush(string color)
+    {
+        if (!_brushCache.TryGetValue(color, out var brush)) { brush = new SolidColorBrush(Color.Parse(color)); _brushCache[color] = brush; }
+        return brush;
     }
 
     private static void UpdateFollowFromPosition(TerminalView view)
@@ -570,9 +671,9 @@ public sealed class MainWindow : Window
         view.FollowStatus.Foreground = new SolidColorBrush(Color.Parse(view.AutoScrollEnabled ? "#2E7D32" : "#B26A00"));
         view.JumpToLive.IsVisible = !view.AutoScrollEnabled;
     }
-    private void AppendStatus(TextBlock log, string message) { var color = message.Contains("open", StringComparison.OrdinalIgnoreCase) || message.Contains("connect", StringComparison.OrdinalIgnoreCase) ? "#2E7D32" : message.Contains("error", StringComparison.OrdinalIgnoreCase) || message.Contains("close", StringComparison.OrdinalIgnoreCase) || message.Contains("disconnect", StringComparison.OrdinalIgnoreCase) ? "#C62828" : null; AppendText(log, $"\r\n[{message}]\r\n", color); }
-    private static void ClearLog(TextBlock log) => log.Inlines?.Clear();
-    private static void ClearView(TerminalView view) { ClearLog(view.Log); view.VtTerminal.Clear(); }
+    private void AppendStatus(LogView log, string message) { var color = message.Contains("open", StringComparison.OrdinalIgnoreCase) || message.Contains("connect", StringComparison.OrdinalIgnoreCase) ? "#2E7D32" : message.Contains("error", StringComparison.OrdinalIgnoreCase) || message.Contains("close", StringComparison.OrdinalIgnoreCase) || message.Contains("disconnect", StringComparison.OrdinalIgnoreCase) ? "#C62828" : null; AppendText(log, $"\r\n[{message}]\r\n", color); }
+    private static void ClearLog(TerminalView view) => view.Log.Clear();
+    private static void ClearView(TerminalView view) { ClearLog(view); view.VtTerminal.Clear(); }
 
     private void StartReconnect(TerminalView view, Func<Task> connect)
     {
@@ -604,16 +705,23 @@ public sealed class MainWindow : Window
 
     private async Task ShutdownAsync()
     {
-        // Capture and write UI state before awaiting transport shutdown. This is
-        // important for the window X button, where the desktop lifetime is already
-        // beginning to close while asynchronous cleanup is running.
+        // Everything that must survive process exit happens before the first
+        // await: with the window X button the desktop lifetime is already closing,
+        // so continuations after an await may never run. That includes the config
+        // save AND flushing/closing the log writers.
         if (!_skipConfigSave)
         {
             foreach (var view in _views.Values) SaveView(view);
             _config.Save();
         }
-        foreach (var view in _views.Values) { StopReconnect(view); view.OpenRequested = false; if (_logWriters.ContainsKey(view.Log)) AppendText(view.Log, "\r\n[Connection closed]\r\n", "#E57373"); await view.Session.CloseAsync(); EndLogging(view.Log); }
+        foreach (var view in _views.Values)
+        {
+            StopReconnect(view); view.OpenRequested = false;
+            if (_logWriters.ContainsKey(view.Log)) AppendText(view.Log, "\r\n[Connection closed]\r\n", "#E57373");
+            EndLogging(view.Log);
+        }
         _logWriters.Clear(); _sharedLogWriters.Clear();
+        foreach (var view in _views.Values) await view.Session.CloseAsync();
     }
 
     private void SaveView(TerminalView view)
@@ -626,7 +734,7 @@ public sealed class MainWindow : Window
 
     private sealed class TerminalView
     {
-        public required TabItem Tab; public required TransportSession Session; public required TextBlock Log; public required ScrollViewer LogScroll; public required ScrollViewer VtScroll; public required TextBlock FollowStatus; public required Button JumpToLive; public required VtTerminalControl VtTerminal; public required ComboBox Display; public required TextBlock ModeLabel; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public required Border[] Signals; public bool VtMode; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested; public bool AutoScrollEnabled = true; public bool HasPendingOutput; public bool ScrollQueued; public ScrollViewer ActiveScroll => VtMode ? VtScroll : LogScroll;
+        public required TabItem Tab; public required TransportSession Session; public required LogView Log; public required ScrollViewer LogScroll; public required ScrollViewer VtScroll; public required TextBlock FollowStatus; public required Button JumpToLive; public required VtTerminalControl VtTerminal; public required ComboBox Display; public required TextBlock ModeLabel; public required TextBox Address; public required TextBox Port; public ComboBox? PortList; public required ComboBox Baud; public required ComboBox DataBits; public required ComboBox Parity; public required ComboBox StopBits; public required CheckBox AutoReconnect; public required CheckBox Rts; public required CheckBox Dtr; public required List<CommandRow> Rows; public required TransportKind Kind; public ListBox? TcpClients; public Button? DisconnectClient; public int? SelectedClientId; public required Border[] Signals; public Button? OpenButton; public bool VtMode; public bool TimestampEnabled; public bool PauseDisplay; public bool OpenRequested; public bool AutoScrollEnabled = true; public bool HasPendingOutput; public bool ScrollQueued; public readonly object PendingLock = new(); public readonly List<ReadOnlyMemory<byte>> PendingChunks = new(); public bool DrainScheduled; public ScrollViewer ActiveScroll => VtMode ? VtScroll : LogScroll;
     }
     private sealed class CommandRow { public TextBox? Text; public CheckBox? Hex; public CheckBox? Lf; public Button? SendButton; public Func<Task>? Send; }
     private sealed class SerialPortOption
@@ -643,7 +751,10 @@ public sealed class MainWindow : Window
         private static readonly TimeSpan FlushInterval = TimeSpan.FromMilliseconds(250);
         private readonly StreamWriter _writer;
         private readonly StringBuilder _pending = new();
-        private DateTime _lastFlush = DateTime.UtcNow;
+
+        // A timer (not a lazy check on the next write) so the buffered tail still
+        // reaches disk when the device goes quiet.
+        private readonly DispatcherTimer _flushTimer;
 
         public string FilePath { get; }
 
@@ -651,21 +762,24 @@ public sealed class MainWindow : Window
         {
             FilePath = path;
             _writer = new StreamWriter(path, append: true, Encoding.UTF8) { AutoFlush = false };
+            _flushTimer = new DispatcherTimer { Interval = FlushInterval };
+            _flushTimer.Tick += (_, _) => Flush();
+            _flushTimer.Start();
         }
 
         public void Write(string text)
         {
             _pending.Append(text);
-            if (_pending.Length >= FlushSize || DateTime.UtcNow - _lastFlush >= FlushInterval) Flush();
+            if (_pending.Length >= FlushSize) Flush();
         }
 
         private void Flush()
         {
             if (_pending.Length == 0) return;
-            _writer.Write(_pending.ToString()); _pending.Clear(); _writer.Flush(); _lastFlush = DateTime.UtcNow;
+            _writer.Write(_pending.ToString()); _pending.Clear(); _writer.Flush();
         }
 
-        public void Dispose() { Flush(); _writer.Dispose(); }
+        public void Dispose() { _flushTimer.Stop(); Flush(); _writer.Dispose(); }
     }
 
     private sealed class SharedLogWriter
