@@ -33,7 +33,7 @@ commit_parsers = [
   { message = "^test", skip = true},
   { message = "^build", skip = true},
   { message = "^ci", skip = true},
-  { message = "^perf", skip = true},
+  { message = "^perf", group = "Performance"},
 ]
 protect_breaking_commits = false
 filter_commits = true
