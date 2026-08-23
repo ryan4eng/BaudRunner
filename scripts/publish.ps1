@@ -72,14 +72,82 @@ if ($isTaggedRelease) {
     $versionSuffix = "rc$candidateNumber"
 }
 
-if (Test-Path -LiteralPath $releaseDirectory) { throw "Output directory already exists: $releaseDirectory" }
-if (Test-Path -LiteralPath $stagingDirectory) { throw "Staging directory already exists: $stagingDirectory" }
+# An interrupted or failed local run leaves the candidate directory behind while the
+# candidate counter is only advanced on success, so without this the next run keeps
+# colliding with the same name and the script can never be run again.
+if ($mode -eq "release-candidate") {
+    while (Test-Path -LiteralPath $releaseDirectory) {
+        $candidateNumber++
+        $versionTag = "v$baseVersion-rc$candidateNumber"
+        $versionSuffix = "rc$candidateNumber"
+        $releaseDirectory = Join-Path $publishRoot "release-candidates\$versionTag"
+        $stagingDirectory = Join-Path $publishRoot "release-staging\$versionTag"
+    }
+} elseif (Test-Path -LiteralPath $releaseDirectory) {
+    throw "Output directory already exists: $releaseDirectory"
+}
+if (Test-Path -LiteralPath $stagingDirectory) { Remove-Item -LiteralPath $stagingDirectory -Recurse -Force }
+
+# Windows has no POSIX mode bits, so neither Compress-Archive nor tar.exe records an
+# executable bit for the Linux apphost: an extracted ./BaudRunner is refused with
+# "Permission denied". Build an uncompressed ustar archive, stamp mode 0755 into the
+# header of the named entry, recompute the header checksum, then gzip it.
+function New-LinuxPackage {
+    param(
+        [Parameter(Mandatory)][string]$SourceDirectory,
+        [Parameter(Mandatory)][string]$DestinationPath,
+        [Parameter(Mandatory)][string]$ExecutableName
+    )
+
+    $tarPath = [System.IO.Path]::GetTempFileName()
+    Remove-Item -LiteralPath $tarPath -Force
+    $tarPath = "$tarPath.tar"
+    try {
+        & tar --create --format ustar --file $tarPath --directory $SourceDirectory "."
+        if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE." }
+
+        $bytes = [System.IO.File]::ReadAllBytes($tarPath)
+        $offset = 0
+        $patched = $false
+        while ($offset + 512 -le $bytes.Length) {
+            $name = [System.Text.Encoding]::ASCII.GetString($bytes, $offset, 100).TrimEnd([char]0)
+            if ([string]::IsNullOrEmpty($name)) { break }
+
+            $sizeField = [System.Text.Encoding]::ASCII.GetString($bytes, $offset + 124, 12).Trim([char]0, ' ')
+            $size = if ($sizeField) { [Convert]::ToInt64($sizeField, 8) } else { 0 }
+
+            if ($name -eq "./$ExecutableName" -or $name -eq $ExecutableName) {
+                $mode = [System.Text.Encoding]::ASCII.GetBytes("0000755" + [char]0)
+                [Array]::Copy($mode, 0, $bytes, $offset + 100, 8)
+
+                # The checksum is computed with its own field read as eight spaces.
+                for ($i = 0; $i -lt 8; $i++) { $bytes[$offset + 148 + $i] = 32 }
+                $sum = 0
+                for ($i = 0; $i -lt 512; $i++) { $sum += $bytes[$offset + $i] }
+                $checksum = [System.Text.Encoding]::ASCII.GetBytes(([Convert]::ToString($sum, 8)).PadLeft(6, '0') + [char]0 + ' ')
+                [Array]::Copy($checksum, 0, $bytes, $offset + 148, 8)
+                $patched = $true
+            }
+
+            $offset += 512 + [Math]::Ceiling($size / 512) * 512
+        }
+        if (-not $patched) { throw "Could not find '$ExecutableName' in the archive to mark executable." }
+
+        $input = New-Object System.IO.MemoryStream (, $bytes)
+        $output = [System.IO.File]::Create($DestinationPath)
+        try {
+            $gzip = New-Object System.IO.Compression.GZipStream($output, [System.IO.Compression.CompressionLevel]::Optimal)
+            try { $input.CopyTo($gzip) } finally { $gzip.Dispose() }
+        } finally { $output.Dispose(); $input.Dispose() }
+    }
+    finally { if (Test-Path -LiteralPath $tarPath) { Remove-Item -LiteralPath $tarPath -Force } }
+}
 
 $builds = @(
     @{ Name = "windows-framework-dependent"; Runtime = "win-x64"; SelfContained = $false; Application = "BaudRunner.exe" },
     @{ Name = "windows-self-contained"; Runtime = "win-x64"; SelfContained = $true; Application = "BaudRunner.exe" },
-    @{ Name = "linux-framework-dependent"; Runtime = "linux-x64"; SelfContained = $false; Application = "BaudRunner" },
-    @{ Name = "linux-self-contained"; Runtime = "linux-x64"; SelfContained = $true; Application = "BaudRunner" }
+    @{ Name = "linux-framework-dependent"; Runtime = "linux-x64"; SelfContained = $false; Application = "BaudRunner"; Tar = $true },
+    @{ Name = "linux-self-contained"; Runtime = "linux-x64"; SelfContained = $true; Application = "BaudRunner"; Tar = $true }
 )
 
 New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
@@ -89,7 +157,9 @@ New-Item -ItemType Directory -Path $publishRoot -Force | Out-Null
 try {
     foreach ($build in $builds) {
         $output = Join-Path $stagingDirectory $build.Name
-        $zip = Join-Path $releaseDirectory "BaudRunner-$versionTag-$($build.Name).zip"
+        $useTar = $build.ContainsKey("Tar") -and $build.Tar
+        $extension = if ($useTar) { "tar.gz" } else { "zip" }
+        $package = Join-Path $releaseDirectory "BaudRunner-$versionTag-$($build.Name).$extension"
         $selfContainedText = $build.SelfContained.ToString().ToLowerInvariant()
 
         Write-Host "Publishing $($build.Name) as $versionTag..."
@@ -109,9 +179,14 @@ try {
 
         $application = Join-Path $output $build.Application
         if (-not (Test-Path -LiteralPath $application)) { throw "Expected application not found: $application" }
-        Get-ChildItem -LiteralPath $output -Filter "*.pdb" -File | Remove-Item -Force
-        Compress-Archive -Path (Join-Path $output "*") -DestinationPath $zip -CompressionLevel Optimal
-        Write-Host ("Created {0} ({1:N0} bytes)" -f $zip, (Get-Item -LiteralPath $zip).Length) -ForegroundColor Green
+        # PDBs stay in the package: the application writes stack traces to errors.log,
+        # and without symbols those traces have no file or line information.
+        if ($useTar) {
+            New-LinuxPackage -SourceDirectory $output -DestinationPath $package -ExecutableName $build.Application
+        } else {
+            Compress-Archive -Path (Join-Path $output "*") -DestinationPath $package -CompressionLevel Optimal
+        }
+        Write-Host ("Created {0} ({1:N0} bytes)" -f $package, (Get-Item -LiteralPath $package).Length) -ForegroundColor Green
     }
 
     if ($mode -eq "release-candidate") {

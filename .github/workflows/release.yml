@@ -84,7 +84,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BaudRunner-${{ steps.publish.outputs.version }}
-          path: ${{ steps.publish.outputs.artifact_directory }}/*.zip
+          path: |
+            ${{ steps.publish.outputs.artifact_directory }}/*.zip
+            ${{ steps.publish.outputs.artifact_directory }}/*.tar.gz
 
       - name: Create GitHub Release
         if: github.event_name == 'push'
@@ -93,7 +95,9 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: BaudRunner ${{ steps.publish.outputs.version }}
           body_path: RELEASE_NOTES.md
-          files: ${{ steps.publish.outputs.artifact_directory }}/*.zip
+          files: |
+            ${{ steps.publish.outputs.artifact_directory }}/*.zip
+            ${{ steps.publish.outputs.artifact_directory }}/*.tar.gz
 
   bump-version-pr:
     name: Open patch version bump PR
