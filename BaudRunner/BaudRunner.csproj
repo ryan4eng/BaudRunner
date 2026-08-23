@@ -6,14 +6,35 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <ApplicationIcon>..\assets\AppIcon.ico</ApplicationIcon>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <!-- Drops the libicu dependency, so the "self-contained" Linux package really is.
+         Everything here parses and formats with invariant/ordinal semantics already. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Symbols ship with the packages: the application writes stack traces to
+         errors.log, which are far less useful without file and line information. -->
+    <DebugType>portable</DebugType>
+    <IncludeSymbolsInSingleFile>true</IncludeSymbolsInSingleFile>
+    <Deterministic>true</Deterministic>
   </PropertyGroup>
   <ItemGroup>
-    <AvaloniaResource Include="..\assets\Icon.png" LogicalName="Icon.png" />
+    <!-- Only AppIcon.png is loaded (MainWindow sets the window icon from it). The
+         2 MB assets/Icon.png used to be embedded in every package unreferenced. -->
     <AvaloniaResource Include="..\assets\AppIcon.png" LogicalName="AppIcon.png" />
     <PackageReference Include="Avalonia" Version="11.3.2" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.2" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.2" />
     <PackageReference Include="System.IO.Ports" Version="9.0.7" />
+  </ItemGroup>
+  <!-- Friendly COM port names come from WMI, which exists only on Windows. The
+       reference used to be unconditional, so System.Management.dll and
+       System.CodeDom.dll shipped inside both Linux packages. Keyed on the target
+       runtime, not the build host, because the packages are cross-published
+       from Windows. -->
+  <PropertyGroup Condition="!$([MSBuild]::ValueOrDefault('$(RuntimeIdentifier)', '').StartsWith('linux'))">
+    <DefineConstants>$(DefineConstants);WMI</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="!$([MSBuild]::ValueOrDefault('$(RuntimeIdentifier)', '').StartsWith('linux'))">
     <PackageReference Include="System.Management" Version="9.0.7" />
   </ItemGroup>
 </Project>
