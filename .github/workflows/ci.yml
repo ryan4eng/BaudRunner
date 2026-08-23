@@ -1,0 +1,39 @@
+name: BaudRunner CI
+
+# The release workflow only runs on release/v* tags, so before this nothing on main
+# or in a pull request was ever compiled or tested.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore
+        run: dotnet restore BaudRunner/BaudRunner.sln
+
+      - name: Build
+        run: dotnet build BaudRunner/BaudRunner.sln --configuration Release --no-restore -warnaserror
+
+      - name: Test
+        run: dotnet test BaudRunner.Tests/BaudRunner.Tests.csproj --configuration Release --no-build --verbosity normal
