@@ -750,7 +750,12 @@ public sealed class MainWindow : Window
             send.Click += async (_, _) => await SendCommand();
             text.KeyDown += async (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; await SendCommand(); } };
             // Live validation: an unparsable hex row is obvious before it is sent.
-            void Validate() => text.Foreground = CommandSlot.Validate(text.Text ?? "", hex.IsChecked == true) is null ? null : GetBrush(ErrorColor);
+            // ClearValue, not null: a local null Foreground overrides the theme brush and the text renders invisible.
+            void Validate()
+            {
+                if (CommandSlot.Validate(text.Text ?? "", hex.IsChecked == true) is null) text.ClearValue(TextBox.ForegroundProperty);
+                else text.Foreground = GetBrush(ErrorColor);
+            }
             text.TextChanged += (_, _) => { Validate(); RequestConfigSave(); };
             hex.IsCheckedChanged += (_, _) => { Validate(); RequestConfigSave(); };
             ending.SelectionChanged += (_, _) => RequestConfigSave();
@@ -1351,6 +1356,7 @@ public sealed class MainWindow : Window
             pause.IsChecked = view.PauseDisplay;
             echo.IsChecked = view.LocalEcho;
             openLog.IsEnabled = view.LastLogPath is { } path && File.Exists(path);
+            echo.IsEnabled = !view.VtMode;
             find.IsEnabled = !view.VtMode;
             UpdateDisplayStatus(view);
         };
