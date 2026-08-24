@@ -1,4 +1,5 @@
 using Avalonia.Media;
+using Avalonia.Media.Immutable;
 
 namespace BaudRunner;
 
@@ -10,7 +11,9 @@ public static class AnsiPalette
     private static readonly IBrush?[] _cube = new IBrush?[256];
     private static readonly Dictionary<int, IBrush> _trueColor = new();
 
-    private static IBrush[] Build(params string[] colors) => colors.Select(color => (IBrush)new SolidColorBrush(Color.Parse(color))).ToArray();
+    // Immutable: SolidColorBrush is an AvaloniaObject with UI-thread affinity, and this
+    // type's static ctor can first run on a worker thread (the test host does exactly that).
+    private static IBrush[] Build(params string[] colors) => colors.Select(color => (IBrush)new ImmutableSolidColorBrush(Color.Parse(color))).ToArray();
 
     public static IBrush Standard(int index) => _standard[index & 7];
     public static IBrush Bright(int index) => _bright[index & 7];
@@ -34,7 +37,7 @@ public static class AnsiPalette
             var grey = (byte)(8 + (index - 232) * 10);
             color = Color.FromRgb(grey, grey, grey);
         }
-        var brush = new SolidColorBrush(color);
+        var brush = new ImmutableSolidColorBrush(color);
         _cube[index] = brush;
         return brush;
     }
@@ -48,7 +51,7 @@ public static class AnsiPalette
         {
             // Bounded so a device streaming truecolour cannot grow this without limit.
             if (_trueColor.Count > 4096) _trueColor.Clear();
-            brush = new SolidColorBrush(Color.FromRgb((byte)(key >> 16), (byte)(key >> 8), (byte)key));
+            brush = new ImmutableSolidColorBrush(Color.FromRgb((byte)(key >> 16), (byte)(key >> 8), (byte)key));
             _trueColor[key] = brush;
         }
         return brush;
