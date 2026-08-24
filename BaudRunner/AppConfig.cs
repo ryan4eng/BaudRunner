@@ -123,8 +123,6 @@ public sealed class TerminalConfig
     public ReceiveEncoding Encoding { get; set; } = ReceiveEncoding.Latin1;
     public bool Pause { get; set; }
     public bool AutoReconnect { get; set; }
-    public bool Rts { get; set; }
-    public bool Dtr { get; set; }
     public bool LocalEcho { get; set; } = true;
     public LineEnding SendEnding { get; set; } = LineEnding.CrLf;
     public List<string> History { get; set; } = new();

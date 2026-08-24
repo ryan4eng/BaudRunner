@@ -244,8 +244,8 @@ public sealed class MainWindow : Window
         var close = new Button { Content = "Close", IsEnabled = false, MinWidth = 72 };
         var clear = new Button { Content = "Clear", MinWidth = 72 };
         var autoReconnect = new CheckBox { Content = "Auto-reconnect", IsVisible = kind is TransportKind.Serial or TransportKind.TcpClient, IsChecked = saved.AutoReconnect };
-        var rts = new CheckBox { Content = "RTS", IsVisible = isSerial, IsChecked = saved.Rts };
-        var dtr = new CheckBox { Content = "DTR", IsVisible = isSerial, IsChecked = saved.Dtr };
+        var rts = new CheckBox { Content = "RTS", IsVisible = isSerial };
+        var dtr = new CheckBox { Content = "DTR", IsVisible = isSerial };
         var cts = SignalIndicator("CTS", isSerial);
         var dsr = SignalIndicator("DSR", isSerial);
         var breakButton = isSerial ? new Button { Content = "Break", IsEnabled = false, MinWidth = 64 } : null;
@@ -508,8 +508,8 @@ public sealed class MainWindow : Window
             RequestConfigSave();
         };
 
-        view.Rts.IsCheckedChanged += (_, _) => { session.SetRts(view.Rts.IsChecked == true); RequestConfigSave(); };
-        view.Dtr.IsCheckedChanged += (_, _) => { session.SetDtr(view.Dtr.IsChecked == true); RequestConfigSave(); };
+        view.Rts.IsCheckedChanged += (_, _) => session.SetRts(view.Rts.IsChecked == true);
+        view.Dtr.IsCheckedChanged += (_, _) => session.SetDtr(view.Dtr.IsChecked == true);
         view.AutoReconnect.IsCheckedChanged += (_, _) => { if (view.AutoReconnect.IsChecked != true) StopReconnect(view); RequestConfigSave(); };
         foreach (var control in new[] { view.DataBits, view.Parity, view.StopBits, view.FlowControl, view.Display })
             control.SelectionChanged += (_, _) => RequestConfigSave();
@@ -1561,8 +1561,6 @@ public sealed class MainWindow : Window
         Encoding = view.Formatter.Encoding,
         Pause = view.PauseDisplay,
         AutoReconnect = view.AutoReconnect.IsChecked == true,
-        Rts = view.Rts.IsChecked == true,
-        Dtr = view.Dtr.IsChecked == true,
         LocalEcho = view.LocalEcho,
         SendEnding = (LineEnding)view.SendEnding.SelectedIndex,
         History = view.History.ToList(),
