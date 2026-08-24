@@ -302,7 +302,11 @@ public sealed class MainWindow : Window
         var modeLabel = new TextBlock { FontSize = 12, FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#52606D" : "#B8C2CC")) };
         var followStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
         var counters = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), FontSize = 12, Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#52606D" : "#8BA4BB")) };
-        var jumpToLive = new Button { Content = "Jump to live output", IsVisible = false, Margin = new Thickness(12, 0, 0, 0) };
+        var jumpToLive = new Button
+        {
+            Content = "Jump to live output", IsVisible = false, Margin = new Thickness(12, 0, 0, 0),
+            FontSize = 12, Padding = new Thickness(8, 2), MinHeight = 0, VerticalAlignment = VerticalAlignment.Center,
+        };
 
         var leftStatus = new StackPanel { Orientation = Orientation.Horizontal, Children = { modeLabel, followStatus, jumpToLive } };
         var footerContent = new DockPanel { LastChildFill = true };
