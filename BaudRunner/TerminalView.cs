@@ -36,6 +36,7 @@ public sealed class TerminalView
     public required TextBlock FollowStatus { get; init; }
     public required TextBlock Counters { get; init; }
     public required Button JumpToLive { get; init; }
+    public required Border Footer { get; init; }
 
     public required TextBox Address { get; init; }
     public required TextBox Port { get; init; }

@@ -304,6 +304,13 @@ public sealed class MainWindow : Window
         var counters = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), FontSize = 12, Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#52606D" : "#8BA4BB")) };
         var jumpToLive = new Button { Content = "Jump to live output", IsVisible = false, Margin = new Thickness(12, 0, 0, 0) };
 
+        var leftStatus = new StackPanel { Orientation = Orientation.Horizontal, Children = { modeLabel, followStatus, jumpToLive } };
+        var footerContent = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(counters, Dock.Right);
+        footerContent.Children.Add(counters);
+        footerContent.Children.Add(leftStatus);
+        var footer = new Border { Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#E8EDF1" : "#191F27")), Padding = new Thickness(8, 5), Child = footerContent };
+
         var findBox = new TextBox { Watermark = "Find", MinWidth = 220 };
         var findCase = new ToggleButton { Content = "Aa", MinWidth = 34 };
         var findRegex = new ToggleButton { Content = ".*", MinWidth = 34 };
@@ -337,7 +344,7 @@ public sealed class MainWindow : Window
         {
             Title = title, Tab = tab, Kind = kind, Session = session, Formatter = formatter,
             Log = log, LogScroll = logScroll, Vt = vt, VtScroll = vtScroll,
-            Display = display, ModeLabel = modeLabel, FollowStatus = followStatus, Counters = counters, JumpToLive = jumpToLive,
+            Display = display, ModeLabel = modeLabel, FollowStatus = followStatus, Counters = counters, JumpToLive = jumpToLive, Footer = footer,
             Address = address, Port = kind is TransportKind.TcpServer or TransportKind.UdpServer ? listenPort : remotePort,
             PortList = portList, Baud = baud, DataBits = dataBits, Parity = parity, StopBits = stopBits, FlowControl = flowControl,
             AutoReconnect = autoReconnect, Rts = rts, Dtr = dtr, Signals = new[] { cts, dsr },
@@ -390,14 +397,11 @@ public sealed class MainWindow : Window
         }
         rightPane.Children.Add(commands);
 
-        var footerContent = new StackPanel { Orientation = Orientation.Horizontal, Children = { modeLabel, followStatus, counters, jumpToLive } };
-        var logFooter = new Border { Background = new SolidColorBrush(Color.Parse(IsLightTheme ? "#E8EDF1" : "#191F27")), Padding = new Thickness(8, 5), Child = footerContent };
         var viewHost = new Grid(); viewHost.Children.Add(logScroll); viewHost.Children.Add(vtScroll);
         var logPane = new DockPanel();
         DockPanel.SetDock(findBar, Dock.Top);
-        DockPanel.SetDock(logFooter, Dock.Bottom);
         DockPanel.SetDock(sendGrid, Dock.Bottom);
-        logPane.Children.Add(findBar); logPane.Children.Add(logFooter); logPane.Children.Add(sendGrid); logPane.Children.Add(viewHost);
+        logPane.Children.Add(findBar); logPane.Children.Add(sendGrid); logPane.Children.Add(viewHost);
 
         // Draggable split: how much room the log deserves against the command list is
         // a per-session judgement, not something to hard-code.
@@ -406,7 +410,12 @@ public sealed class MainWindow : Window
         grid.Children.Add(logPane);
         Grid.SetColumn(splitter, 1); grid.Children.Add(splitter);
         Grid.SetColumn(rightPane, 2); grid.Children.Add(rightPane);
-        tab.Content = grid;
+
+        var content = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(footer, Dock.Bottom);
+        content.Children.Add(footer);
+        content.Children.Add(grid);
+        tab.Content = content;
 
         var logContextMenu = BuildLogContextMenu(view, () => view.VtMode ? view.Vt.HasSelection : view.Log.HasSelection, () => { if (view.VtMode) view.Vt.Copy(); else view.Log.Copy(); });
         log.ContextMenu = logContextMenu;
@@ -1463,6 +1472,9 @@ public sealed class MainWindow : Window
             view.Log.SetTheme(IsLightTheme);
             view.Vt.SetTheme(IsLightTheme);
             view.Formatter.TimestampBrush = GetBrush(IsLightTheme ? "#6B7280" : "#7C8CA0");
+            view.Footer.Background = GetBrush(IsLightTheme ? "#E8EDF1" : "#191F27");
+            view.FindBar.Background = GetBrush(IsLightTheme ? "#E8EDF1" : "#191F27");
+            view.ModeLabel.Foreground = GetBrush(IsLightTheme ? "#52606D" : "#B8C2CC");
             foreach (var signal in view.Signals) SetSignal(signal, signal.Tag is true);
             UpdateCounters(view);
         }
