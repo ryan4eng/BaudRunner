@@ -364,6 +364,7 @@ public sealed class MainWindow : Window
         log.AutoScrollChanged += (_, _) => UpdateFollowStatus(view);
         log.SearchResultsChanged += (_, _) => UpdateFindStatus(view);
         jumpToLive.Click += (_, _) => FollowLiveOutput(view);
+        clear.Click += (_, _) => ClearView(view);
         vtScroll.ScrollChanged += (_, _) => { if (view.VtMode) UpdateVtFollow(view); };
 
         session.BytesReceived += bytes => EnqueueBytes(view, bytes);
