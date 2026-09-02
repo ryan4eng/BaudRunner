@@ -33,6 +33,9 @@ public sealed class DisplayFormatter
 
     private IBrush? _runBrush;
     private bool _hasRun;
+    private bool _echoing;
+    private IBrush? _echoBrush;
+    private Decoder? _echoDecoder;
     private bool _atLineStart = true;
     private bool _pendingCr;
     private DateTime _openedAt;
@@ -58,7 +61,7 @@ public sealed class DisplayFormatter
     /// </summary>
     public void ResetStream(bool restartClock = true)
     {
-        _scanner.Reset(); _sgr.Reset(); _decoder?.Reset();
+        _scanner.Reset(); _sgr.Reset(); _decoder?.Reset(); _echoDecoder?.Reset();
         _textBytes.Clear(); _run.Clear();
         _hasRun = false; _runBrush = null;
         _atLineStart = true; _pendingCr = false;
@@ -95,6 +98,40 @@ public sealed class DisplayFormatter
         FlushRun(output);
     }
 
+    /// <summary>
+    /// Formats bytes the user sent, for local echo: exactly the bytes, line ending
+    /// included, in the current display mode, drawn with <paramref name="brush"/>.
+    /// Escape sequences are shown rather than interpreted and the UTF-8 decoder is
+    /// separate, so a sent sequence cannot disturb the colour or decoder state of
+    /// the received stream. The line-start tracking is shared, so timestamps stay
+    /// right on either side of the echo.
+    /// </summary>
+    public void FormatEcho(ReadOnlySpan<byte> bytes, IBrush? brush, List<LogSegment> output)
+    {
+        _echoing = true; _echoBrush = brush;
+        try
+        {
+            foreach (var value in bytes)
+            {
+                switch (Classify(value))
+                {
+                    case ByteKind.Skip:
+                        break;
+                    case ByteKind.Hex:
+                        FlushText(output);
+                        EmitHex(value, output);
+                        break;
+                    default:
+                        _textBytes.Add(value);
+                        break;
+                }
+            }
+            FlushText(output);
+            FlushRun(output);
+        }
+        finally { _echoing = false; _echoBrush = null; }
+    }
+
     private enum ByteKind { Text, Hex, Skip }
 
     private ByteKind Classify(byte value)
@@ -126,10 +163,12 @@ public sealed class DisplayFormatter
 
         if (Encoding == ReceiveEncoding.Utf8)
         {
-            _decoder ??= new UTF8Encoding(false, false).GetDecoder();
-            var required = _decoder.GetCharCount(source, false);
+            var decoder = _echoing
+                ? (_echoDecoder ??= new UTF8Encoding(false, false).GetDecoder())
+                : (_decoder ??= new UTF8Encoding(false, false).GetDecoder());
+            var required = decoder.GetCharCount(source, false);
             if (_charBuffer.Length < required) _charBuffer = new char[Math.Max(required, _charBuffer.Length * 2)];
-            var written = _decoder.GetChars(source, _charBuffer, false);
+            var written = decoder.GetChars(source, _charBuffer, false);
             for (var i = 0; i < written; i++) EmitChar(_charBuffer[i], output);
         }
         else
@@ -161,15 +200,16 @@ public sealed class DisplayFormatter
         _atLineStart = false; _pendingCr = false;
     }
 
-    private IBrush? TextBrush => Ansi == AnsiMode.Interpret && Mode == DisplayMode.Normal ? _sgr.EffectiveForeground : null;
+    private IBrush? TextBrush => _echoing ? _echoBrush : Ansi == AnsiMode.Interpret && Mode == DisplayMode.Normal ? _sgr.EffectiveForeground : null;
 
     private void EmitHex(byte value, List<LogSegment> output)
     {
         StampIfLineStart(output);
-        Append('{', HexBrush, output);
-        Append(HexDigits[value >> 4], HexBrush, output);
-        Append(HexDigits[value & 0xF], HexBrush, output);
-        Append('}', HexBrush, output);
+        var brush = _echoing ? _echoBrush : HexBrush;
+        Append('{', brush, output);
+        Append(HexDigits[value >> 4], brush, output);
+        Append(HexDigits[value & 0xF], brush, output);
+        Append('}', brush, output);
         _atLineStart = false; _pendingCr = false;
     }
 

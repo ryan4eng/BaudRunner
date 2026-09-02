@@ -851,8 +851,22 @@ public sealed class MainWindow : Window
         catch (FormatException ex) { AppendText(view, $"\r\n[Command error: {ex.Message}]\r\n", ErrorColor); return false; }
 
         if (!await SendRawAsync(view, payload)) return false;
-        if (view.LocalEcho && !view.VtMode) AppendText(view, $"\r\n> {command.Text}\r\n", EchoColor);
+        if (view.LocalEcho && !view.VtMode) EchoSent(view, payload);
         return true;
+    }
+
+    /// <summary>
+    /// Local echo shows the bytes exactly as they went out, line ending included and
+    /// in the current display mode, so where the reply lands relative to the command
+    /// is visible. The old "> text" banner forced its own line breaks around it.
+    /// </summary>
+    private void EchoSent(TerminalView view, ReadOnlySpan<byte> payload)
+    {
+        _segments.Clear();
+        view.Formatter.FormatEcho(payload, GetBrush(EchoColor), _segments);
+        if (_segments.Count == 0) return;
+        if (view.Writer is { } writer) foreach (var segment in _segments) writer.Write(segment.Text);
+        view.Log.AppendSegments(_segments);
     }
 
     private async Task<bool> SendRawAsync(TerminalView view, ReadOnlyMemory<byte> payload)

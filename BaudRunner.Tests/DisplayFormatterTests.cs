@@ -159,6 +159,48 @@ public class DisplayFormatterTests
     }
 
     [Fact]
+    public void Echo_shows_the_sent_bytes_inline_in_the_echo_brush()
+    {
+        var formatter = Formatter();
+        var output = new List<LogSegment>();
+        formatter.Format(Encoding.Latin1.GetBytes("abc"), output);
+        formatter.FormatEcho(Encoding.Latin1.GetBytes("cmd\r\n"), Brushes.Blue, output);
+        formatter.Format(Encoding.Latin1.GetBytes("reply\r\n"), output);
+
+        // No banner, no forced line breaks: the command lands where it was sent.
+        Assert.Equal("abccmd\r\nreply\r\n", string.Concat(output.Select(segment => segment.Text)));
+        Assert.Same(Brushes.Blue, Assert.Single(output, segment => segment.Text == "cmd\r\n").Brush);
+        Assert.All(output.Where(segment => segment.Text != "cmd\r\n"), segment => Assert.Null(segment.Brush));
+    }
+
+    [Fact]
+    public void Echo_shows_escape_sequences_raw_and_leaves_the_stream_colour_alone()
+    {
+        var formatter = Formatter();
+        var output = new List<LogSegment>();
+        formatter.FormatEcho(Encoding.Latin1.GetBytes("\x1B[31m"), Brushes.Blue, output);
+        formatter.Format(Encoding.Latin1.GetBytes("plain"), output);
+
+        Assert.Equal("{1B}[31mplain", string.Concat(output.Select(segment => segment.Text)));
+        Assert.All(output.Where(segment => segment.Text != "plain"), segment => Assert.Same(Brushes.Blue, segment.Brush));
+        Assert.Null(Assert.Single(output, segment => segment.Text == "plain").Brush);
+    }
+
+    [Fact]
+    public void Echo_takes_part_in_line_timestamps()
+    {
+        var clock = new DateTime(2026, 8, 21, 9, 30, 0, 500);
+        var formatter = Formatter(f => { f.Timestamps = TimestampMode.Wall; f.Clock = () => clock; });
+        formatter.ResetStream();
+
+        var output = new List<LogSegment>();
+        formatter.Format(Encoding.Latin1.GetBytes("line\r\n"), output);
+        formatter.FormatEcho(Encoding.Latin1.GetBytes("cmd\r\n"), Brushes.Blue, output);
+        formatter.Format(Encoding.Latin1.GetBytes("next\r\n"), output);
+        Assert.Equal("[09:30:00.500] line\r\n[09:30:00.500] cmd\r\n[09:30:00.500] next\r\n", string.Concat(output.Select(segment => segment.Text)));
+    }
+
+    [Fact]
     public void Clearing_the_log_keeps_the_since_connect_origin()
     {
         var now = new DateTime(2026, 8, 21, 9, 30, 0);
