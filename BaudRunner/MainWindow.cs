@@ -1383,6 +1383,11 @@ public sealed class MainWindow : Window
     private ContextMenu BuildLogContextMenu(TerminalView view, Func<bool> hasSelection, Action copySelection, Action? paste = null)
     {
         var menu = new ContextMenu();
+        // Clear first: on a live terminal it is the item reached for most often.
+        var clearItem = new MenuItem { Header = "Clear log", InputGesture = new KeyGesture(Key.L, KeyModifiers.Control) };
+        clearItem.Click += (_, _) => ClearView(view);
+        menu.Items.Add(clearItem); menu.Items.Add(new Separator());
+
         var copy = new MenuItem { Header = "Copy" };
         copy.Click += (_, _) => copySelection();
         var saveSelection = new MenuItem { Header = "Save selection as..." };
@@ -1449,10 +1454,7 @@ public sealed class MainWindow : Window
         revealLog.Click += (_, _) => RevealLogFile(view);
 
         menu.Items.Add(pause); menu.Items.Add(echo); menu.Items.Add(new Separator());
-        menu.Items.Add(find); menu.Items.Add(openLog); menu.Items.Add(revealLog); menu.Items.Add(new Separator());
-        var clearItem = new MenuItem { Header = "Clear log" };
-        clearItem.Click += (_, _) => ClearView(view);
-        menu.Items.Add(clearItem);
+        menu.Items.Add(find); menu.Items.Add(openLog); menu.Items.Add(revealLog);
 
         menu.Opening += (_, _) =>
         {
