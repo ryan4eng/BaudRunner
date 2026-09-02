@@ -63,6 +63,36 @@ public class VtTerminalControlTests
         Assert.EndsWith("[note]\ndone", vt.AllText);
     }
 
+    [AvaloniaFact]
+    public async Task Paste_sends_the_clipboard_text_with_each_line_break_as_enter()
+    {
+        var vt = new VtTerminalControl { EnterEnding = LineEnding.Cr };
+        var window = new Window { Width = 300, Height = 200, Content = vt };
+        window.Show();
+        var sent = new List<byte>();
+        vt.SendBytes += bytes => sent.AddRange(bytes.ToArray());
+
+        await TopLevel.GetTopLevel(vt)!.Clipboard!.SetTextAsync("ls -l\r\nps\n");
+        await vt.PasteAsync();
+
+        Assert.Equal("ls -l\rps\r", Encoding.Latin1.GetString(sent.ToArray()));
+    }
+
+    [AvaloniaFact]
+    public async Task Paste_of_an_empty_clipboard_sends_nothing()
+    {
+        var vt = new VtTerminalControl();
+        var window = new Window { Width = 300, Height = 200, Content = vt };
+        window.Show();
+        var sends = 0;
+        vt.SendBytes += _ => sends++;
+
+        await TopLevel.GetTopLevel(vt)!.Clipboard!.SetTextAsync("");
+        await vt.PasteAsync();
+
+        Assert.Equal(0, sends);
+    }
+
     [Theory]
     [InlineData(Key.Escape, KeyModifiers.None, true)]
     [InlineData(Key.W, KeyModifiers.Control, true)]

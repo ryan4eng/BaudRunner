@@ -197,7 +197,7 @@ public sealed class MainWindow : Window
         "F1 .. F12          Send quick command 1..12",
         "Up / Down          Recall previous commands in the send box",
         "Ctrl+C / Ctrl+A    Copy selection / select all in the log",
-        "In VT100 mode Esc and Ctrl+letter go to the device instead; use Ctrl+Shift+C to copy.",
+        "In VT100 mode Esc and Ctrl+letter go to the device; Ctrl+Shift+C copies, Ctrl+Shift+V or Shift+Insert pastes.",
     });
 
     private TerminalView? Active => _tabs?.SelectedItem is TabItem tab ? _views.FirstOrDefault(view => ReferenceEquals(view.Tab, tab)) : null;
@@ -464,7 +464,7 @@ public sealed class MainWindow : Window
 
         var logContextMenu = BuildLogContextMenu(view, () => view.VtMode ? view.Vt.HasSelection : view.Log.HasSelection, () => { if (view.VtMode) view.Vt.Copy(); else view.Log.Copy(); });
         log.ContextMenu = logContextMenu;
-        vt.SetContextMenu(BuildLogContextMenu(view, () => view.Vt.HasSelection, view.Vt.Copy));
+        vt.SetContextMenu(BuildLogContextMenu(view, () => view.Vt.HasSelection, view.Vt.Copy, paste: () => _ = view.Vt.PasteAsync()));
 
         WireBehaviour(view, saved);
         SetConnectionState(view, false);
@@ -1380,7 +1380,7 @@ public sealed class MainWindow : Window
 
     /* ---------------- context menu ---------------- */
 
-    private ContextMenu BuildLogContextMenu(TerminalView view, Func<bool> hasSelection, Action copySelection)
+    private ContextMenu BuildLogContextMenu(TerminalView view, Func<bool> hasSelection, Action copySelection, Action? paste = null)
     {
         var menu = new ContextMenu();
         var copy = new MenuItem { Header = "Copy" };
@@ -1389,6 +1389,15 @@ public sealed class MainWindow : Window
         saveSelection.Click += (_, _) => _ = SaveTextAsync(view, view.VtMode ? view.Vt.SelectedText : view.Log.SelectedText, "selection");
         var copySeparator = new Separator();
         menu.Items.Add(copy); menu.Items.Add(saveSelection); menu.Items.Add(copySeparator);
+
+        // Only the terminal pastes: the plain log is read-only, and there the send box is the place to type.
+        MenuItem? pasteItem = null;
+        if (paste is not null)
+        {
+            pasteItem = new MenuItem { Header = "Paste", InputGesture = new KeyGesture(Key.V, KeyModifiers.Control | KeyModifiers.Shift) };
+            pasteItem.Click += (_, _) => paste();
+            menu.Items.Add(pasteItem); menu.Items.Add(new Separator());
+        }
 
         var display = new MenuItem { Header = "Display format" };
         var displayOptions = new List<(string Name, int Index)> { ("Normal", 0), ("Hex (all bytes)", 1), ("Hex (except CR/LF)", 2), ("ASCII only", 3) };
@@ -1450,6 +1459,7 @@ public sealed class MainWindow : Window
             copy.IsVisible = hasSelection();
             saveSelection.IsVisible = hasSelection();
             copySeparator.IsVisible = hasSelection();
+            if (pasteItem is not null) pasteItem.IsEnabled = view.Session.IsOpen;
             Check(display, item => displayOptions.FirstOrDefault(option => option.Name == item).Index == view.Display.SelectedIndex && displayOptions.Any(option => option.Name == item));
             Check(ansi, item => item == view.Formatter.Ansi switch { AnsiMode.Interpret => "Interpret", AnsiMode.Strip => "Strip", _ => "Show raw" });
             Check(stamps, item => item == view.Formatter.Timestamps switch { TimestampMode.Off => "Off", TimestampMode.Wall => "Time of day", TimestampMode.SinceOpen => "Since connect", _ => "Delta between lines" });

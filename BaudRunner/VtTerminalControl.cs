@@ -51,6 +51,40 @@ public sealed class VtTerminalControl : UserControl
     public string AllText => string.Concat((_screen.Inlines ?? new InlineCollection()).OfType<Run>().Select(run => run.Text));
     public void Copy() => _screen.Copy();
 
+    /// <summary>
+    /// Sends the clipboard text to the device as if it had been typed. Each line break
+    /// goes out as the Enter key would send it, so a pasted script runs line by line
+    /// in a shell the same way it would in any other terminal.
+    /// </summary>
+    public async Task PasteAsync()
+    {
+        string? text;
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is null) return;
+            text = await clipboard.GetTextAsync();
+        }
+        catch (Exception) { return; }
+        if (string.IsNullOrEmpty(text)) return;
+        Send(EncodePaste(text));
+    }
+
+    private byte[] EncodePaste(string text)
+    {
+        var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var buffer = new List<byte>(text.Length + lines.Length);
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (i > 0) buffer.AddRange(EnterBytes);
+            buffer.AddRange(EncodeOutgoing(lines[i]));
+        }
+        return buffer.ToArray();
+    }
+
+    /// <summary>What the Enter key sends: CR when no ending is configured, which is what a shell or AT device expects.</summary>
+    private byte[] EnterBytes => CommandSlot.EndingBytes(EnterEnding) is { Length: > 0 } ending ? ending : new byte[] { 0x0D };
+
     public void SetContextMenu(ContextMenu menu)
     {
         ContextMenu = menu;
@@ -382,9 +416,11 @@ public sealed class VtTerminalControl : UserControl
         var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
 
-        // Copy has to keep a gesture: Ctrl+C itself must reach the device as 0x03.
+        // Copy and paste keep gestures of their own: Ctrl+C itself must reach the
+        // device as 0x03 and Ctrl+V as 0x16. Shift+Insert is the classic terminal paste.
         if (ctrl && shift && e.Key == Key.C) { Copy(); e.Handled = true; return; }
         if (ctrl && shift && e.Key == Key.A) { _screen.SelectAll(); e.Handled = true; return; }
+        if ((ctrl && shift && e.Key == Key.V) || (shift && !ctrl && e.Key == Key.Insert)) { _ = PasteAsync(); e.Handled = true; return; }
 
         var bytes = Translate(e.Key, ctrl);
         if (bytes.Length == 0) return;
@@ -411,7 +447,7 @@ public sealed class VtTerminalControl : UserControl
 
         switch (key)
         {
-            case Key.Enter: return CommandSlot.EndingBytes(EnterEnding) is { Length: > 0 } ending ? ending : new byte[] { 0x0D };
+            case Key.Enter: return EnterBytes;
             case Key.Back: return new byte[] { 0x08 };
             case Key.Tab: return new byte[] { 0x09 };
             case Key.Escape: return new byte[] { 0x1B };

@@ -32,7 +32,7 @@ BaudRunner is a native C# replacement for the legacy `SerialTerminal` WinForms a
 - Hex input accepts `01 03 00 6B`, `01,03`, `0x01 0x03`, `01-03` and unseparated `0103006B`.
 - Text input supports `<CR>`, `<LF>`, `<TAB>`, `<ESC>`, `<NUL>`, `<BEL>`, `<BS>` and `<0xNN>` tokens, as well as the `{NN}` form the log uses to display a non-printable byte — so a value copied out of the log can be pasted straight back into a command. Text is sent as Latin-1 byte-for-byte rather than replacing anything above `0x7F` with `?`.
 - Repeat send on an interval, for polling a register or soak-testing a command.
-- In VT100 mode, control keys reach the device: `Ctrl+A`–`Ctrl+Z`, arrows, `Home`/`End`, `PageUp`/`PageDown`, `Insert`/`Delete` and `F1`–`F12`. Use `Ctrl+Shift+C` to copy, since `Ctrl+C` is sent as `0x03`.
+- In VT100 mode, control keys reach the device: `Ctrl+A`–`Ctrl+Z`, arrows, `Home`/`End`, `PageUp`/`PageDown`, `Insert`/`Delete` and `F1`–`F12`. Use `Ctrl+Shift+C` to copy, since `Ctrl+C` is sent as `0x03`, and `Ctrl+Shift+V` or `Shift+Insert` to paste; each line break in the pasted text is sent as Enter would send it.
 
 ### Diagnostics and logging
 
@@ -55,7 +55,7 @@ BaudRunner is a native C# replacement for the legacy `SerialTerminal` WinForms a
 | `F1` … `F12` | Send quick command 1–12 |
 | `Up` / `Down` | Recall previous commands in the send box |
 
-In VT100 mode, while the terminal has focus, `Esc` and `Ctrl+letter` go to the device rather than triggering the shortcuts above. Use the menu, or click outside the terminal first.
+In VT100 mode, while the terminal has focus, `Esc` and `Ctrl+letter` go to the device rather than triggering the shortcuts above. Use the menu, or click outside the terminal first. `Ctrl+Shift+C` copies and `Ctrl+Shift+V` or `Shift+Insert` pastes.
 
 ## Settings and files
 
