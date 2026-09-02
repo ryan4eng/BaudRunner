@@ -48,6 +48,10 @@ public class DisplayFormatterTests
         => Assert.Equal("AB\n", Render(Formatter(f => f.Mode = DisplayMode.AsciiOnly), new byte[] { (byte)'A', 0x01, 0xF0, (byte)'B', 0x0A }));
 
     [Fact]
+    public void Ascii_only_mode_keeps_tabs()
+        => Assert.Equal("a\tb", Render(Formatter(f => f.Mode = DisplayMode.AsciiOnly), "a\tb"));
+
+    [Fact]
     public void Ansi_colour_is_applied_as_a_span_and_the_sequence_is_not_shown()
     {
         var formatter = Formatter();

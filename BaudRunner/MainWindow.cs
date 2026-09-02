@@ -249,6 +249,7 @@ public sealed class MainWindow : Window
 
         var tab = new TabItem { Header = title };
         var rows = new List<CommandRow>();
+        var mutedLabels = new List<TextBlock>();
         var address = new TextBox { Text = saved.Address, Width = 160 };
         var remotePort = new TextBox { Text = saved.Port, Width = 88, Watermark = "5800" };
         var listenPort = new TextBox { Text = string.IsNullOrWhiteSpace(saved.Port) ? "5800" : saved.Port, Width = 88, Watermark = "5800" };
@@ -300,18 +301,18 @@ public sealed class MainWindow : Window
         topControls.Children.Add(new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 18, 14, 0), Children = { clear } });
         if (isSerial)
         {
-            topControls.Children.Add(Field("Port", portList!));
-            bottomControls.Children.Add(Field("Baud", baud)); bottomControls.Children.Add(Field("Data bits", dataBits));
-            bottomControls.Children.Add(Field("Parity", parity)); bottomControls.Children.Add(Field("Stop bits", stopBits));
-            bottomControls.Children.Add(Field("Flow control", flowControl));
+            topControls.Children.Add(Field("Port", portList!, mutedLabels));
+            bottomControls.Children.Add(Field("Baud", baud, mutedLabels)); bottomControls.Children.Add(Field("Data bits", dataBits, mutedLabels));
+            bottomControls.Children.Add(Field("Parity", parity, mutedLabels)); bottomControls.Children.Add(Field("Stop bits", stopBits, mutedLabels));
+            bottomControls.Children.Add(Field("Flow control", flowControl, mutedLabels));
         }
         else if (kind is TransportKind.TcpServer or TransportKind.UdpServer)
         {
-            topControls.Children.Add(Field("Listen port", listenPort));
+            topControls.Children.Add(Field("Listen port", listenPort, mutedLabels));
         }
         else
         {
-            topControls.Children.Add(Field("Address", address)); topControls.Children.Add(Field("Remote port", remotePort));
+            topControls.Children.Add(Field("Address", address, mutedLabels)); topControls.Children.Add(Field("Remote port", remotePort, mutedLabels));
         }
         topControls.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(10, 18, 0, 0), Children = { open, close, autoReconnect } });
 
@@ -329,7 +330,7 @@ public sealed class MainWindow : Window
         var vtScroll = new ScrollViewer { Content = vt, IsVisible = false, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
         var modeLabel = new TextBlock { FontSize = 12, FontWeight = FontWeight.Bold, VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#52606D" : "#B8C2CC")) };
         var followStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
-        var counters = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), FontSize = 12, Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#52606D" : "#8BA4BB")) };
+        var counters = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), FontSize = 12, Foreground = GetBrush(MutedColor) };
         var jumpToLive = new Button
         {
             Content = "Jump to live output", IsVisible = false, Margin = new Thickness(12, 0, 0, 0),
@@ -384,6 +385,7 @@ public sealed class MainWindow : Window
             Rows = rows, SendBox = sendBox, SendButton = sendButton, SendEnding = sendEnding, RepeatToggle = repeatToggle, RepeatInterval = repeatInterval,
             FindBar = findBar, FindBox = findBox, FindStatus = findStatus, FindCase = findCase, FindRegex = findRegex,
             FindPreviousButton = findPrevious, FindNextButton = findNext, FindCloseButton = findClose,
+            MutedLabels = mutedLabels,
             TcpClients = tcpClients, DisconnectClient = disconnectClient, ClientCountLabel = clientCountLabel,
             VtMode = isSerial && display.SelectedIndex == 4,
             PauseDisplay = saved.Pause,
@@ -724,8 +726,9 @@ public sealed class MainWindow : Window
         void Apply()
         {
             var ok = view.Log.SetSearch(view.FindBox.Text, view.FindCase.IsChecked == true, view.FindRegex.IsChecked == true);
+            view.FindPatternInvalid = !ok;
             view.FindStatus.Text = ok ? MatchSummary(view) : "invalid pattern";
-            view.FindStatus.Foreground = GetBrush(ok ? (IsLightTheme ? "#52606D" : "#8BA4BB") : ErrorColor);
+            view.FindStatus.Foreground = GetBrush(ok ? MutedColor : ErrorColor);
         }
 
         view.FindBox.TextChanged += (_, _) => Apply();
@@ -785,9 +788,8 @@ public sealed class MainWindow : Window
     {
         var panel = new StackPanel { Spacing = 5 };
         panel.Children.Add(new TextBlock { Text = "Quick commands", FontSize = 16, FontWeight = FontWeight.Bold });
-        if (view.Kind == TransportKind.TcpServer)
-            panel.Children.Add(new TextBlock { Text = "Send to selected client", FontSize = 12, Foreground = new SolidColorBrush(Color.Parse("#8BA4BB")), Margin = new Thickness(0, 0, 0, 4) });
-        panel.Children.Add(new TextBlock { Text = "F1 - F12 send the matching row.", FontSize = 11, Foreground = new SolidColorBrush(Color.Parse("#8BA4BB")), Margin = new Thickness(0, 0, 0, 4) });
+        if (view.Kind == TransportKind.TcpServer) panel.Children.Add(Hint(view, "Send to selected client", 12));
+        panel.Children.Add(Hint(view, "F1 - F12 send the matching row.", 11));
 
         for (var i = 0; i < 12; i++)
         {
@@ -831,6 +833,14 @@ public sealed class MainWindow : Window
             panel.Children.Add(row);
         }
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    /// <summary>A secondary label in the muted colour, registered so a theme switch recolours it.</summary>
+    private TextBlock Hint(TerminalView view, string text, double fontSize)
+    {
+        var label = new TextBlock { Text = text, FontSize = fontSize, Foreground = GetBrush(MutedColor), Margin = new Thickness(0, 0, 0, 4) };
+        view.MutedLabels.Add(label);
+        return label;
     }
 
     private async Task<bool> SendCommandAsync(TerminalView view, CommandSlot command)
@@ -1003,7 +1013,7 @@ public sealed class MainWindow : Window
         // An unexplained framing-error count is the diagnostic for a wrong baud rate.
         if (errors > 0) text += $"   errors: {view.FramingErrors} framing, {view.OverrunErrors} overrun, {view.ParityErrors} parity";
         view.Counters.Text = text;
-        view.Counters.Foreground = GetBrush(errors > 0 ? "#B26A00" : IsLightTheme ? "#52606D" : "#8BA4BB");
+        view.Counters.Foreground = GetBrush(errors > 0 ? "#B26A00" : MutedColor);
     }
 
     private static string Human(double value) => value switch
@@ -1501,12 +1511,20 @@ public sealed class MainWindow : Window
 
     private bool IsLightTheme => Application.Current?.RequestedThemeVariant == ThemeVariant.Light;
 
-    private Border Field(string label, Control control) => new()
+    /// <summary>Secondary text: field captions, hints, counters.</summary>
+    private string MutedColor => IsLightTheme ? "#52606D" : "#8BA4BB";
+
+    private Border Field(string label, Control control, List<TextBlock> register)
     {
-        Margin = new Thickness(0, 0, 10, 0),
-        Padding = new Thickness(0, 0, 0, 2),
-        Child = new StackPanel { Spacing = 3, Children = { new TextBlock { Text = label, FontSize = 11, Foreground = new SolidColorBrush(Color.Parse(IsLightTheme ? "#52606D" : "#8BA4BB")) }, control } },
-    };
+        var caption = new TextBlock { Text = label, FontSize = 11, Foreground = GetBrush(MutedColor) };
+        register.Add(caption);
+        return new Border
+        {
+            Margin = new Thickness(0, 0, 10, 0),
+            Padding = new Thickness(0, 0, 0, 2),
+            Child = new StackPanel { Spacing = 3, Children = { caption, control } },
+        };
+    }
 
     private Border SignalIndicator(string label, bool visible) => new()
     {
@@ -1556,6 +1574,9 @@ public sealed class MainWindow : Window
             view.Footer.Background = GetBrush(IsLightTheme ? "#E8EDF1" : "#191F27");
             view.FindBar.Background = GetBrush(IsLightTheme ? "#E8EDF1" : "#191F27");
             view.ModeLabel.Foreground = GetBrush(IsLightTheme ? "#52606D" : "#B8C2CC");
+            // Captions and hints used to keep the colour of whichever theme built them.
+            foreach (var label in view.MutedLabels) label.Foreground = GetBrush(MutedColor);
+            view.FindStatus.Foreground = GetBrush(view.FindPatternInvalid ? ErrorColor : MutedColor);
             foreach (var signal in view.Signals) SetSignal(signal, signal.Tag is true);
             UpdateCounters(view);
         }

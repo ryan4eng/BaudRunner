@@ -106,7 +106,8 @@ public sealed class DisplayFormatter
             case DisplayMode.HexExceptCrLf:
                 return value is 10 or 13 ? ByteKind.Text : ByteKind.Hex;
             case DisplayMode.AsciiOnly:
-                return value is 10 or 13 || value is >= 0x20 and <= 0x7E ? ByteKind.Text : ByteKind.Skip;
+                // Tab is ASCII too; dropping it ran tab-separated columns together.
+                return value is 9 or 10 or 13 || value is >= 0x20 and <= 0x7E ? ByteKind.Text : ByteKind.Skip;
             default:
                 if (value is 9 or 10 or 13) return ByteKind.Text;
                 if (value is >= 0x20 and <= 0x7E) return ByteKind.Text;

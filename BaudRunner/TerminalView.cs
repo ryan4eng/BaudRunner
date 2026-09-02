@@ -71,6 +71,10 @@ public sealed class TerminalView
     public required Button FindNextButton { get; init; }
     public required Button FindCloseButton { get; init; }
 
+    /// <summary>Secondary labels drawn in the muted theme colour, recoloured together on a theme switch.</summary>
+    public required List<TextBlock> MutedLabels { get; init; }
+    public bool FindPatternInvalid;
+
     public ListBox? TcpClients { get; init; }
     public Button? DisconnectClient { get; init; }
     public TextBlock? ClientCountLabel { get; init; }
