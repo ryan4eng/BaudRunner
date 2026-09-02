@@ -153,4 +153,16 @@ public class DisplayFormatterTests
         formatter.ResetStream();
         Assert.Equal("2mtext", Render(formatter, "2mtext"));
     }
+
+    [Fact]
+    public void Clearing_the_log_keeps_the_since_connect_origin()
+    {
+        var now = new DateTime(2026, 8, 21, 9, 30, 0);
+        var formatter = Formatter(f => { f.Timestamps = TimestampMode.SinceOpen; f.Clock = () => now; });
+        formatter.ResetStream();
+
+        now = now.AddSeconds(5);
+        formatter.ResetStream(restartClock: false);
+        Assert.Equal("[5.000] x", Render(formatter, "x"));
+    }
 }

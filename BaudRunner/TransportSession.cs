@@ -366,10 +366,14 @@ public sealed class TransportSession : IAsyncDisposable
     {
         while (!token.IsCancellationRequested)
         {
+            // Copied: CloseCoreAsync nulls _listener from another thread, and the
+            // gap between the loop test and the accept was a NullReferenceException.
+            var listener = _listener;
+            if (listener is null) return;
             TcpClient client;
             try
             {
-                client = await _listener!.AcceptTcpClientAsync(token);
+                client = await listener.AcceptTcpClientAsync(token);
             }
             catch (OperationCanceledException) { return; }
             catch (ObjectDisposedException) { return; }
@@ -389,7 +393,9 @@ public sealed class TransportSession : IAsyncDisposable
                 {
                     var id = ++_nextClientId;
                     _serverClients[id] = client;
-                    info = new TcpClientInfo(id, client.Client.RemoteEndPoint?.ToString() ?? "Unknown");
+                    // Describe, not RemoteEndPoint directly: a client that resets right
+                    // after the accept throws there, and that used to end the accept loop.
+                    info = new TcpClientInfo(id, Describe(client));
                 }
             }
             if (info is null)
@@ -488,6 +494,10 @@ public sealed class TransportSession : IAsyncDisposable
 
     public async Task CloseAsync()
     {
+        // A connect that is still in progress holds the lifetime gate. Cancelling its
+        // token first makes Close abort the attempt at once instead of queueing behind
+        // the OS connect timeout, which on Windows is over twenty seconds.
+        Try(() => _stop?.Cancel());
         await _lifetime.WaitAsync();
         try { await CloseCoreAsync(); }
         finally { _lifetime.Release(); }

@@ -6,20 +6,22 @@ public readonly struct AnsiCsi
     public char Private { get; }
     public char Final { get; }
     public string Intermediates { get; }
-    private readonly int[] _parameters;
+    private readonly int[]? _parameters;
 
     public AnsiCsi(char privateMarker, int[] parameters, string intermediates, char final)
     {
         Private = privateMarker; _parameters = parameters; Intermediates = intermediates; Final = final;
     }
 
-    public int Count => _parameters.Length;
+    // Null-safe: Feed hands out `default` on every byte that does not complete a
+    // sequence, and a caller that reads Count before checking Final must not crash.
+    public int Count => _parameters?.Length ?? 0;
 
     /// <summary>Parameter <paramref name="index"/>, or <paramref name="fallback"/> when it was omitted.</summary>
-    public int this[int index, int fallback = 0] => index >= 0 && index < _parameters.Length && _parameters[index] >= 0 ? _parameters[index] : fallback;
+    public int this[int index, int fallback = 0] => index >= 0 && index < Count && _parameters![index] >= 0 ? _parameters[index] : fallback;
 
     /// <summary>True when the parameter was written out rather than defaulted. ECMA-48 gives omitted parameters a per-command meaning.</summary>
-    public bool HasParameter(int index) => index >= 0 && index < _parameters.Length && _parameters[index] >= 0;
+    public bool HasParameter(int index) => index >= 0 && index < Count && _parameters![index] >= 0;
 }
 
 /// <summary>
@@ -106,8 +108,11 @@ public sealed class AnsiScanner
                 return true;
 
             case State.Charset:
+                if (value == 0x1B) { BeginEscape(); return true; }
+                // The designator takes one printable argument; anything else is not
+                // part of the sequence and is handed back like the CSI states do.
                 Reset();
-                return true;
+                return IsSequenceByte(value);
         }
         return false;
     }
@@ -134,10 +139,14 @@ public sealed class AnsiScanner
             case 0x1B:
                 return true;
         }
-        // Everything else is a complete two-byte sequence (ESC 7, ESC =, ESC M ...).
+        // Everything printable is a complete two-byte sequence (ESC 7, ESC =, ESC M ...).
+        // A control or 8-bit byte here is not one: a lone ESC in binary data used to
+        // swallow the line feed that followed it, and with it the line break.
         Reset();
-        return true;
+        return IsSequenceByte(value);
     }
+
+    private static bool IsSequenceByte(byte value) => value is >= 0x20 and <= 0x7E;
 
     private void AppendParameter(char c)
     {

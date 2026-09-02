@@ -2,6 +2,7 @@ using System.Text;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 
 namespace BaudRunner;
@@ -63,7 +64,10 @@ public sealed class VtTerminalControl : UserControl
         Background = _backgroundBrush;
         Content = _screen;
         Focusable = true;
-        AddHandler(KeyDownEvent, OnKeyDown, handledEventsToo: true);
+        // Tunnelling, so the key is translated before the SelectableTextBlock gets
+        // it: otherwise Ctrl+A both went to the device as 0x01 and highlighted the
+        // whole screen, and Ctrl+C copied as well as sending 0x03.
+        AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
         AddHandler(TextInputEvent, OnTextInput, handledEventsToo: true);
         PointerPressed += (_, _) => Focus();
     }
@@ -160,18 +164,29 @@ public sealed class VtTerminalControl : UserControl
         FlushPending();
     }
 
+    /// <summary>A user clear: everything goes, including buffered paused input and the parser state.</summary>
     public void Clear()
+    {
+        ClearScreen();
+        _pausedChunks.Clear();
+        _pausedBytes = 0;
+        _scanner.Reset();
+        _sgr.Reset();
+        _decoder?.Reset();
+    }
+
+    /// <summary>
+    /// ESC[2J from the device: the text goes, the attributes stay. Resetting the SGR
+    /// state here too made "set red, clear screen, print" come out in the default
+    /// colour, which is not what a real terminal does.
+    /// </summary>
+    private void ClearScreen()
     {
         _screen.Inlines?.Clear();
         _pending.Clear();
         _textBytes.Clear();
-        _pausedChunks.Clear();
-        _pausedBytes = 0;
         _charCount = 0;
         _pendingCr = false;
-        _scanner.Reset();
-        _sgr.Reset();
-        _decoder?.Reset();
     }
 
     private void FlushText()
@@ -214,7 +229,7 @@ public sealed class VtTerminalControl : UserControl
                 // ED's omitted parameter means 0 (erase from the cursor to the end of
                 // the display), not 2. Without a cursor/grid model a partial erase
                 // cannot be honoured, so only an explicit ESC[2J clears.
-                if (csi.HasParameter(0) && csi[0] == 2) Clear();
+                if (csi.HasParameter(0) && csi[0] == 2) ClearScreen();
                 break;
             case 'K':
                 // Likewise for EL: an omitted parameter is 0 (erase to end of line),
@@ -240,6 +255,24 @@ public sealed class VtTerminalControl : UserControl
             inlines.Add(new Run(value) { Foreground = foreground });
         _charCount += value.Length;
         TextAppended?.Invoke(value);
+        TrimScrollback();
+    }
+
+    /// <summary>
+    /// Text from the application rather than the device: open errors, a lost
+    /// connection, a reconnect. It bypasses the parser, so nothing in it is
+    /// interpreted, and it is not reported through <see cref="TextAppended"/>
+    /// because the caller already writes it to the file log.
+    /// </summary>
+    public void AppendNotice(string text, IBrush? brush)
+    {
+        if (_screen.Inlines is not { } inlines) return;
+        FlushText(); FlushPending();
+        _pendingCr = false;
+        var value = text.Replace("\r\n", "\n").Replace('\r', '\n');
+        if (value.Length == 0) return;
+        inlines.Add(new Run(value) { Foreground = brush ?? _defaultForeground });
+        _charCount += value.Length;
         TrimScrollback();
     }
 
@@ -318,6 +351,17 @@ public sealed class VtTerminalControl : UserControl
     }
 
     /* ---------------- keyboard ---------------- */
+
+    /// <summary>
+    /// The gestures a focused terminal claims for the device - Escape and
+    /// Ctrl+letter - so that application shortcuts on the same keys can stand aside.
+    /// Ctrl+Shift combinations, Ctrl+End and Ctrl+digit are not claimed.
+    /// </summary>
+    public static bool ConsumesKey(Key key, KeyModifiers modifiers)
+    {
+        if (modifiers == KeyModifiers.None) return key == Key.Escape;
+        return modifiers == KeyModifiers.Control && key is >= Key.A and <= Key.Z;
+    }
 
     private void OnTextInput(object? sender, TextInputEventArgs e)
     {

@@ -55,6 +55,8 @@ BaudRunner is a native C# replacement for the legacy `SerialTerminal` WinForms a
 | `F1` … `F12` | Send quick command 1–12 |
 | `Up` / `Down` | Recall previous commands in the send box |
 
+In VT100 mode, while the terminal has focus, `Esc` and `Ctrl+letter` go to the device rather than triggering the shortcuts above. Use the menu, or click outside the terminal first.
+
 ## Settings and files
 
 Settings are stored as `config.json` under the platform's local application data directory in `BaudRunner`, and logs beside it in `BaudRunner/logs`. The settings file is written atomically with a rolling `config.json.bak`, saved a few seconds after any change rather than only at exit, and enums are written as names so the file is readable and editable by hand. Window size, position, selected tab, theme, command slots and send history are all persisted.

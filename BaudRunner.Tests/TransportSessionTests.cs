@@ -140,6 +140,21 @@ public class TransportSessionTests
     }
 
     [Fact]
+    public async Task Close_aborts_a_connect_that_is_still_in_progress()
+    {
+        await using var session = new TransportSession(TransportKind.TcpClient);
+        // A non-routable address: the SYN goes nowhere and the connect would sit in
+        // the OS timeout, which Close used to have to wait out.
+        var open = session.OpenAsync("10.255.255.1", 9, new SerialSettings());
+        await Task.Delay(200);
+
+        var close = session.CloseAsync();
+        var settled = Task.WhenAll(close, open.ContinueWith(t => _ = t.Exception));
+        Assert.Same(settled, await Task.WhenAny(settled, Task.Delay(5000)));
+        Assert.False(session.IsOpen);
+    }
+
+    [Fact]
     public async Task Sending_before_open_throws_rather_than_dereferencing_null()
     {
         await using var session = new TransportSession(TransportKind.TcpClient);

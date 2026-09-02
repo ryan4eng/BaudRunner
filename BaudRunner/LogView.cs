@@ -394,10 +394,15 @@ public sealed class LogView : Control, ILogicalScrollable
     {
         if (_matches.Count == 0) return;
         var keep = _matches.FindIndex(m => m.Line >= id);
-        if (keep < 0) _matches.Clear();
-        else if (keep > 0) _matches.RemoveRange(0, keep);
+        if (keep < 0) { _matches.Clear(); _currentMatch = -1; }
+        else if (keep > 0)
+        {
+            _matches.RemoveRange(0, keep);
+            // The current match survives a trim as long as its line did; forgetting it
+            // on every trim made "3 of 40" flick back to "40 matches" during a stream.
+            _currentMatch = _currentMatch >= keep ? _currentMatch - keep : -1;
+        }
         if (_searchScannedId < id) _searchScannedId = long.MinValue;
-        _currentMatch = -1;
     }
 
     /// <summary>

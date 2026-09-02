@@ -110,6 +110,27 @@ public class AnsiScannerTests
         var (text, _) = Run(new AnsiScanner(), "\x1B[12\nnext");
         Assert.Equal("\nnext", text);
     }
+
+    [Fact]
+    public void A_control_character_right_after_escape_is_handed_back_too()
+    {
+        // A lone ESC in binary data used to eat the line feed behind it.
+        var (text, _) = Run(new AnsiScanner(), "\x1B\nnext");
+        Assert.Equal("\nnext", text);
+    }
+
+    [Fact]
+    public void A_high_byte_after_a_charset_designator_is_not_swallowed()
+        => Assert.Equal("\u00E9", Run(new AnsiScanner(), "\x1B(\u00E9").Text);
+
+    [Fact]
+    public void A_default_csi_has_no_parameters_rather_than_a_null_array()
+    {
+        AnsiCsi csi = default;
+        Assert.Equal(0, csi.Count);
+        Assert.False(csi.HasParameter(0));
+        Assert.Equal(5, csi[0, fallback: 5]);
+    }
 }
 
 public class SgrStateTests
@@ -180,5 +201,28 @@ public class SgrStateTests
         var state = new SgrState();
         state.Apply(Sgr(38, 5));
         Assert.Null(state.Foreground);
+    }
+
+    [Fact]
+    public void Bold_brightens_a_basic_colour_whichever_order_the_codes_arrive_in()
+    {
+        var boldFirst = new SgrState(); boldFirst.Apply(Sgr(1, 31));
+        var colourFirst = new SgrState(); colourFirst.Apply(Sgr(31, 1));
+        Assert.Same(AnsiPalette.Bright(1), boldFirst.Foreground);
+        Assert.Same(AnsiPalette.Bright(1), colourFirst.Foreground);
+
+        // Bold off takes the brightness away again; a bright (90-97) colour is unaffected by it.
+        colourFirst.Apply(Sgr(22));
+        Assert.Same(AnsiPalette.Standard(1), colourFirst.Foreground);
+        var bright = new SgrState(); bright.Apply(Sgr(92, 22));
+        Assert.Same(AnsiPalette.Bright(2), bright.Foreground);
+    }
+
+    [Fact]
+    public void An_extended_colour_replaces_a_basic_one_outright()
+    {
+        var state = new SgrState();
+        state.Apply(Sgr(31, 38, 5, 196, 1));
+        Assert.Same(AnsiPalette.Indexed(196), state.Foreground);
     }
 }

@@ -66,13 +66,24 @@ public static class AnsiPalette
 /// </summary>
 public sealed class SgrState
 {
-    public IBrush? Foreground { get; private set; }
+    private IBrush? _foreground;
+    private int _basicForeground = -1;
+
+    /// <summary>
+    /// A basic colour (SGR 30-37) is resolved against Bold when it is read, not when
+    /// it was set: "ESC[31;1m" and "ESC[1;31m" both mean bright red, and "ESC[22m"
+    /// must take the brightness away again. Resolving at set time got all three wrong.
+    /// </summary>
+    public IBrush? Foreground => _basicForeground >= 0
+        ? (Bold ? AnsiPalette.Bright(_basicForeground) : AnsiPalette.Standard(_basicForeground))
+        : _foreground;
+
     public IBrush? Background { get; private set; }
     public bool Bold { get; private set; }
     public bool Faint { get; private set; }
     public bool Inverse { get; private set; }
 
-    public void Reset() { Foreground = null; Background = null; Bold = false; Faint = false; Inverse = false; }
+    public void Reset() { _foreground = null; _basicForeground = -1; Background = null; Bold = false; Faint = false; Inverse = false; }
 
     /// <summary>The brush to draw with, or null to use the view's default foreground.</summary>
     public IBrush? EffectiveForeground => Inverse ? Background : Foreground;
@@ -95,19 +106,21 @@ public sealed class SgrState
                 case 7: Inverse = true; break;
                 case 21: case 22: Bold = false; Faint = false; break;
                 case 27: Inverse = false; break;
-                case 39: Foreground = null; break;
+                case 39: SetForeground(null); break;
                 case 49: Background = null; break;
-                case 38: Foreground = ReadExtended(csi, ref i) ?? Foreground; break;
+                case 38: if (ReadExtended(csi, ref i) is { } extended) SetForeground(extended); break;
                 case 48: Background = ReadExtended(csi, ref i) ?? Background; break;
                 default:
-                    if (code is >= 30 and <= 37) Foreground = Bold ? AnsiPalette.Bright(code - 30) : AnsiPalette.Standard(code - 30);
-                    else if (code is >= 90 and <= 97) Foreground = AnsiPalette.Bright(code - 90);
+                    if (code is >= 30 and <= 37) { _foreground = null; _basicForeground = code - 30; }
+                    else if (code is >= 90 and <= 97) SetForeground(AnsiPalette.Bright(code - 90));
                     else if (code is >= 40 and <= 47) Background = AnsiPalette.Standard(code - 40);
                     else if (code is >= 100 and <= 107) Background = AnsiPalette.Bright(code - 100);
                     break;
             }
         }
     }
+
+    private void SetForeground(IBrush? brush) { _foreground = brush; _basicForeground = -1; }
 
     private static IBrush? ReadExtended(in AnsiCsi csi, ref int i)
     {

@@ -67,6 +67,9 @@ public sealed class TerminalView
     public required TextBlock FindStatus { get; init; }
     public required ToggleButton FindCase { get; init; }
     public required ToggleButton FindRegex { get; init; }
+    public required Button FindPreviousButton { get; init; }
+    public required Button FindNextButton { get; init; }
+    public required Button FindCloseButton { get; init; }
 
     public ListBox? TcpClients { get; init; }
     public Button? DisconnectClient { get; init; }

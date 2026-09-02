@@ -102,8 +102,8 @@ public sealed class MainWindow : Window
         _mainMenu = menu;
 
         var file = new MenuItem { Header = "_File" };
-        file.Items.Add(MenuButton("_Open connection", () => Active?.OpenButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)), new KeyGesture(Key.O, KeyModifiers.Control)));
-        file.Items.Add(MenuButton("_Close connection", () => Active?.CloseButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)), new KeyGesture(Key.W, KeyModifiers.Control)));
+        file.Items.Add(MenuButton("_Open connection", OpenActive, new KeyGesture(Key.O, KeyModifiers.Control)));
+        file.Items.Add(MenuButton("_Close connection", CloseActive, new KeyGesture(Key.W, KeyModifiers.Control)));
         file.Items.Add(new Separator());
         file.Items.Add(MenuButton("C_lear active log", () => { if (Active is { } view) ClearView(view); }, new KeyGesture(Key.L, KeyModifiers.Control)));
         file.Items.Add(MenuButton("_Save log as...", () => { if (Active is { } view) _ = SaveTextAsync(view, view.VtMode ? view.Vt.AllText : view.Log.AllText(), "log"); }, new KeyGesture(Key.S, KeyModifiers.Control)));
@@ -136,9 +136,14 @@ public sealed class MainWindow : Window
         KeyDown += HandleFunctionKey;
 
         // MenuItem.InputGesture only *renders* the shortcut next to the item; the
-        // gesture has to be registered here for it to actually do anything.
-        Bind(Key.O, KeyModifiers.Control, () => Active?.OpenButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
-        Bind(Key.W, KeyModifiers.Control, () => Active?.CloseButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
+        // gesture has to be registered here for it to actually do anything. They are
+        // dispatched from a tunnelling KeyDown handler rather than Window.KeyBindings:
+        // Avalonia matches KeyBindings before the focused control sees the key at all,
+        // which is what kept Escape and Ctrl+letter from ever reaching the VT100
+        // terminal - Ctrl+W to delete a word in a shell closed the port instead.
+        AddHandler(KeyDownEvent, HandleShortcut, RoutingStrategies.Tunnel);
+        Bind(Key.O, KeyModifiers.Control, OpenActive);
+        Bind(Key.W, KeyModifiers.Control, CloseActive);
         Bind(Key.L, KeyModifiers.Control, () => { if (Active is { } view) ClearView(view); });
         Bind(Key.S, KeyModifiers.Control, () => { if (Active is { } view) _ = SaveTextAsync(view, view.VtMode ? view.Vt.AllText : view.Log.AllText(), "log"); });
         Bind(Key.F, KeyModifiers.Control, () => { if (Active is { } view) ShowFind(view); });
@@ -154,8 +159,31 @@ public sealed class MainWindow : Window
         return new DockPanel { Children = { menu, tabs } };
     }
 
-    private void Bind(Key key, KeyModifiers modifiers, Action action)
-        => KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(key, modifiers), Command = new SimpleCommand(action) });
+    private readonly List<(KeyGesture Gesture, Action Action)> _shortcuts = new();
+
+    private void Bind(Key key, KeyModifiers modifiers, Action action) => _shortcuts.Add((new KeyGesture(key, modifiers), action));
+
+    private void HandleShortcut(object? sender, KeyEventArgs e)
+    {
+        if (e.Handled) return;
+        // In VT100 mode a focused terminal owns Escape and Ctrl+letter: those bytes
+        // belong to the device, so the application shortcuts on them stand aside.
+        if (Active is { VtMode: true } terminal && terminal.Vt.IsKeyboardFocusWithin && VtTerminalControl.ConsumesKey(e.Key, e.KeyModifiers)) return;
+        foreach (var (gesture, action) in _shortcuts)
+        {
+            if (!gesture.Matches(e)) continue;
+            e.Handled = true;
+            action();
+            return;
+        }
+    }
+
+    // Raising Click on a disabled button still runs its handlers, so the menu and
+    // shortcut paths check what the button itself would allow: Ctrl+W with nothing
+    // open printed "[Connection closed]", and Ctrl+O during a reconnect wait ran a
+    // second connect attempt alongside the retry loop.
+    private void OpenActive() { if (Active is { OpenButton.IsEnabled: true } view) view.OpenButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); }
+    private void CloseActive() { if (Active is { CloseButton.IsEnabled: true } view) view.CloseButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); }
 
     private static string ShortcutHelp() => string.Join("\r\n", new[]
     {
@@ -169,7 +197,7 @@ public sealed class MainWindow : Window
         "F1 .. F12          Send quick command 1..12",
         "Up / Down          Recall previous commands in the send box",
         "Ctrl+C / Ctrl+A    Copy selection / select all in the log",
-        "In VT100 mode Ctrl+letter is sent to the device; use Ctrl+Shift+C to copy.",
+        "In VT100 mode Esc and Ctrl+letter go to the device instead; use Ctrl+Shift+C to copy.",
     });
 
     private TerminalView? Active => _tabs?.SelectedItem is TabItem tab ? _views.FirstOrDefault(view => ReferenceEquals(view.Tab, tab)) : null;
@@ -355,6 +383,7 @@ public sealed class MainWindow : Window
             OpenButton = open, CloseButton = close, BreakButton = breakButton, ResetButton = resetButton,
             Rows = rows, SendBox = sendBox, SendButton = sendButton, SendEnding = sendEnding, RepeatToggle = repeatToggle, RepeatInterval = repeatInterval,
             FindBar = findBar, FindBox = findBox, FindStatus = findStatus, FindCase = findCase, FindRegex = findRegex,
+            FindPreviousButton = findPrevious, FindNextButton = findNext, FindCloseButton = findClose,
             TcpClients = tcpClients, DisconnectClient = disconnectClient, ClientCountLabel = clientCountLabel,
             VtMode = isSerial && display.SelectedIndex == 4,
             PauseDisplay = saved.Pause,
@@ -376,7 +405,17 @@ public sealed class MainWindow : Window
         log.SearchResultsChanged += (_, _) => UpdateFindStatus(view);
         jumpToLive.Click += (_, _) => FollowLiveOutput(view);
         clear.Click += (_, _) => ClearView(view);
-        vtScroll.ScrollChanged += (_, _) => { if (view.VtMode) UpdateVtFollow(view); };
+        vtScroll.ScrollChanged += (_, e) =>
+        {
+            if (!view.VtMode) return;
+            // ScrollChanged is raised after layout, which is the first moment the
+            // extent reflects the bytes just appended. Pinning the tail here, rather
+            // than in the drain where Extent was still the old height, is what makes
+            // the last chunk of a reply visible instead of one drain behind; the
+            // offset change it causes comes back through here and updates the state.
+            if (view.VtFollowing && (e.ExtentDelta.Y != 0 || e.ViewportDelta.Y != 0)) { ScrollVtToEnd(view); return; }
+            UpdateVtFollow(view);
+        };
 
         session.BytesReceived += bytes => EnqueueBytes(view, bytes);
         session.Status += (level, message) => Dispatcher.UIThread.Post(() => AppendStatus(view, level, message));
@@ -472,7 +511,8 @@ public sealed class MainWindow : Window
             {
                 AppendText(view, $"\r\n[Open error: {ex.Message}]\r\n", ErrorColor);
                 EndLogging(view);
-                if (view.AutoReconnect.IsChecked == true) StartReconnect(view, Connect);
+                // Close during the attempt clears OpenRequested; a retry loop must not start then.
+                if (view.OpenRequested && view.AutoReconnect.IsChecked == true) StartReconnect(view, Connect);
             }
             finally
             {
@@ -517,7 +557,19 @@ public sealed class MainWindow : Window
             UpdateFollowStatus(view);
             view.LogScroll.IsVisible = !view.VtMode;
             view.VtScroll.IsVisible = view.VtMode;
-            if (view.VtMode) { view.Vt.Focus(); ScrollVtToEnd(view); if (view.FindBar.IsVisible) HideFind(view); }
+            if (view.VtMode)
+            {
+                // Find is closed first: HideFind focuses the plain log, which must not win over the terminal.
+                if (view.FindBar.IsVisible) HideFind(view);
+                view.VtFollowing = true;
+                ScrollVtToEnd(view);
+                view.Vt.Focus();
+            }
+            else if (view.Vt.IsKeyboardFocusWithin)
+            {
+                // The hidden terminal would otherwise keep translating keystrokes into device bytes.
+                view.Log.Focus();
+            }
             RequestConfigSave();
         };
 
@@ -685,16 +737,12 @@ public sealed class MainWindow : Window
             else if (e.Key == Key.Escape) { e.Handled = true; HideFind(view); }
         };
 
-        if (view.FindBar.Child is StackPanel panel)
-        {
-            var buttons = panel.Children.OfType<Button>().ToList();
-            if (buttons.Count >= 3)
-            {
-                buttons[0].Click += (_, _) => { view.Log.FindNext(false); UpdateFindStatus(view); };
-                buttons[1].Click += (_, _) => { view.Log.FindNext(true); UpdateFindStatus(view); };
-                buttons[2].Click += (_, _) => HideFind(view);
-            }
-        }
+        // Wired by reference, not by position: ToggleButton derives from Button, so
+        // picking "the first three Buttons" out of the bar found the Aa and .* toggles,
+        // which left the up arrow closing the bar and the down arrow and X doing nothing.
+        view.FindPreviousButton.Click += (_, _) => { view.Log.FindNext(false); UpdateFindStatus(view); };
+        view.FindNextButton.Click += (_, _) => { view.Log.FindNext(true); UpdateFindStatus(view); };
+        view.FindCloseButton.Click += (_, _) => HideFind(view);
     }
 
     private void ShowFind(TerminalView view)
@@ -865,8 +913,10 @@ public sealed class MainWindow : Window
 
         if (view.VtMode)
         {
+            // Following is handled from the ScrollChanged event of the ScrollViewer,
+            // once the new text has been measured; a scroll here would use the old
+            // extent and would also ignore a user who has scrolled up to read.
             foreach (var chunk in chunks) view.Vt.ProcessBytes(chunk.Span);
-            ScrollVtToEnd(view);
             return;
         }
 
@@ -900,7 +950,11 @@ public sealed class MainWindow : Window
 
     private void AppendText(TerminalView view, string text, string? color)
     {
-        view.Log.Append(text, color is null ? null : GetBrush(color));
+        var brush = color is null ? null : GetBrush(color);
+        view.Log.Append(text, brush);
+        // The plain log is hidden in VT100 mode; without this an open error, a lost
+        // connection or a send failure was invisible there.
+        if (view.VtMode) view.Vt.AppendNotice(text, brush);
         view.Writer?.Write(text);
     }
 
@@ -963,7 +1017,7 @@ public sealed class MainWindow : Window
 
     private static void FollowLiveOutput(TerminalView view)
     {
-        if (view.VtMode) ScrollVtToEnd(view);
+        if (view.VtMode) { view.VtFollowing = true; ScrollVtToEnd(view); }
         else view.Log.ScrollToEnd();
         UpdateFollowStatus(view);
     }
@@ -988,7 +1042,7 @@ public sealed class MainWindow : Window
     {
         var following = view.VtMode ? view.VtFollowing : view.Log.AutoScroll;
         view.FollowStatus.Text = following ? "● Following live output" : "‖ Auto-scroll paused";
-        view.FollowStatus.Foreground = new SolidColorBrush(Color.Parse(following ? "#2E7D32" : "#B26A00"));
+        view.FollowStatus.Foreground = GetBrush(following ? "#2E7D32" : "#B26A00");
         view.JumpToLive.IsVisible = !following;
     }
 
@@ -1035,6 +1089,9 @@ public sealed class MainWindow : Window
         if (view.ResetButton is not null) view.ResetButton.IsEnabled = connected;
         // Setting RtsEnable throws once the handshake owns the line.
         view.Rts.IsEnabled = !connected || !view.Session.HandshakeOwnsRts;
+        // CTS/DSR are only polled while open; without this they kept showing the last
+        // reading after the port closed, as if the far end were still asserting them.
+        if (!connected) foreach (var signal in view.Signals) SetSignal(signal, false);
 
         var marker = connected ? "● " : view.Reconnecting ? "○ " : "";
         view.Tab.Header = marker + view.Title;
@@ -1072,7 +1129,7 @@ public sealed class MainWindow : Window
 
                 // For serial, wait for the port name to come back rather than spamming
                 // failures at a board that is mid-reflash.
-                if (view.Kind == TransportKind.Serial && SelectedPortName(view.PortList) is { } name && !SerialPort.GetPortNames().Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
+                if (view.Kind == TransportKind.Serial && SelectedPortName(view.PortList) is { } name && !PortIsPresent(name)) continue;
 
                 try { await connect(); AppendText(view, "\r\n[Reconnected]\r\n", "#2E7D32"); break; }
                 catch (Exception ex) { AppendText(view, $"\r\n[Reconnect failed: {ex.Message}]\r\n", ErrorColor); }
@@ -1081,10 +1138,23 @@ public sealed class MainWindow : Window
         catch (OperationCanceledException) { }
         finally
         {
-            view.Reconnecting = false;
-            if (_reconnects.TryGetValue(view, out var current) && current.Token == token) { _reconnects.Remove(view); current.Dispose(); }
-            SetConnectionState(view, view.Session.IsOpen);
+            // Only the loop that still owns the registration may clear the flag. A
+            // StopReconnect followed by a fresh StartReconnect inside the two-second
+            // delay otherwise had the old loop re-enable Open underneath the new one.
+            if (!_reconnects.TryGetValue(view, out var current) || current.Token == token)
+            {
+                if (current is not null) { _reconnects.Remove(view); current.Dispose(); }
+                view.Reconnecting = false;
+                SetConnectionState(view, view.Session.IsOpen);
+            }
         }
+    }
+
+    /// <summary>Enumeration can fail transiently; that reads as "not yet", which keeps the loop waiting instead of killing it.</summary>
+    private static bool PortIsPresent(string name)
+    {
+        try { return SerialPort.GetPortNames().Contains(name, StringComparer.OrdinalIgnoreCase); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
 
     private void StopReconnect(TerminalView view)
@@ -1106,6 +1176,13 @@ public sealed class MainWindow : Window
         {
             var encoding = new UTF8Encoding(false);
             var writer = new LogWriter(_logDirectory, view.Title, encoding);
+            if (writer.HasFailed)
+            {
+                // The Failed event raised inside the constructor fired before anything could listen.
+                writer.Dispose();
+                AppendText(view, $"\r\n[Log error: no writable log file under {_logDirectory}. Logging is off; the session continues.]\r\n", ErrorColor);
+                return;
+            }
             writer.Failed += reason => Dispatcher.UIThread.Post(() =>
             {
                 AppendText(view, $"\r\n[Log error: {reason}. Logging has stopped; the session continues.]\r\n", ErrorColor);
@@ -1398,7 +1475,7 @@ public sealed class MainWindow : Window
     {
         view.Log.Clear();
         view.Vt.Clear();
-        view.Formatter.ResetStream();
+        view.Formatter.ResetStream(restartClock: false);
         UpdateFollowStatus(view);
     }
 
@@ -1623,14 +1700,6 @@ public sealed class MainWindow : Window
         }
     }
 
-    private sealed class SimpleCommand : System.Windows.Input.ICommand
-    {
-        private readonly Action _action;
-        public SimpleCommand(Action action) => _action = action;
-        public event EventHandler? CanExecuteChanged { add { } remove { } }
-        public bool CanExecute(object? parameter) => true;
-        public void Execute(object? parameter) => _action();
-    }
 }
 
 public sealed class SerialPortOption

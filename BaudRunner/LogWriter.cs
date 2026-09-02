@@ -38,6 +38,13 @@ public sealed class LogWriter : IDisposable
 
     public string FilePath { get; private set; } = "";
     public long BytesWritten => Interlocked.Read(ref _totalBytes);
+
+    /// <summary>
+    /// True once logging has stopped for good. The constructor opens the first file
+    /// itself, so a failure there raises <see cref="Failed"/> before any handler can
+    /// be attached; the caller checks this instead.
+    /// </summary>
+    public bool HasFailed => _dead;
     private long _totalBytes;
 
     public LogWriter(string directory, string label, Encoding encoding, long sizeCap = DefaultSizeCap)

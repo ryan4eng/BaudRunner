@@ -51,14 +51,19 @@ public sealed class DisplayFormatter
 
     public DisplayFormatter() => _openedAt = DateTime.Now;
 
-    /// <summary>Drops all mid-stream state. Call when the log is cleared or a connection opens.</summary>
-    public void ResetStream()
+    /// <summary>
+    /// Drops all mid-stream state. Call when the log is cleared or a connection opens.
+    /// Clearing the log passes <paramref name="restartClock"/> false: the "since
+    /// connect" origin belongs to the connection, not to the display.
+    /// </summary>
+    public void ResetStream(bool restartClock = true)
     {
         _scanner.Reset(); _sgr.Reset(); _decoder?.Reset();
         _textBytes.Clear(); _run.Clear();
         _hasRun = false; _runBrush = null;
         _atLineStart = true; _pendingCr = false;
-        _openedAt = Clock(); _havePreviousLine = false;
+        if (restartClock) _openedAt = Clock();
+        _havePreviousLine = false;
     }
 
     public void Format(ReadOnlySpan<byte> bytes, List<LogSegment> output)
